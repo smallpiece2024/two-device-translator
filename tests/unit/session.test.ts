@@ -244,7 +244,7 @@ describe("Session — startRecording / writeAudioChunk / commitUtterance / stopR
 // 空文字final のエッジケース
 // ---------------------------------------------------------------------------
 describe("Session — STTのfinalがtranscript未定義（空文字）で発火するケース", () => {
-  test("空文字finalが1回だけ来てcommitしても発話は確定・配信されない（onUtteranceCommittedは呼ばれない）", () => {
+  test("空文字finalが1回だけ来てもtranscript_finalは送信されず、commitしても発話は確定・配信されない（onUtteranceCommittedは呼ばれない）", () => {
     const { session, ws } = makeSession();
     const { factory, instances } = createFakeSpeechStreamFactory();
     const onUtteranceCommitted = jest.fn();
@@ -255,16 +255,18 @@ describe("Session — STTのfinalがtranscript未定義（空文字）で発火�
     });
 
     // speechStream.ts の実装では `result.alternatives[0].transcript ?? ""` により
-    // transcript 未定義時は onFinal("") が呼ばれる。
+    // transcript 未定義時は onFinal("") が呼ばれるが、Session 側は空文字（trim後空含む）を
+    // バッファに積む前にスキップし、transcript_final も送信しない（新仕様）。
     expect(() => instances[0].onFinal("")).not.toThrow();
 
-    // 空文字でも transcript_final はそのまま ws へ送られる（表示上は空行になりうる）
     const sendMock = ws.send as jest.Mock;
     const sentMessages = sendMock.mock.calls.map((c) => JSON.parse(c[0] as string));
-    expect(sentMessages).toContainEqual({ type: "transcript_final", text: "" });
+    expect(sentMessages).not.toContainEqual(
+      expect.objectContaining({ type: "transcript_final" }),
+    );
 
     expect(() => session.commitUtterance()).not.toThrow();
-    // 空発話は配信されない（commitInternal の空文字ガードにより onCommit は発火しない）
+    // 空発話は配信されない（addFinal 自体がスキップされているため onCommit は発火しない）
     expect(onUtteranceCommitted).not.toHaveBeenCalled();
 
     const committedMessages = sendMock.mock.calls

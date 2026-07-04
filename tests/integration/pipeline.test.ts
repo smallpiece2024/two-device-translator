@@ -263,7 +263,7 @@ describe("翻訳・配信ルーティング パイプライン結合テスト（
     );
   });
 
-  it("空文字final（transcript未定義相当）だけではcommitしても発話は配信されない", async () => {
+  it("空文字final（transcript未定義相当）はtranscript_finalも送信されず、commitしても発話は配信されない", async () => {
     const port = getPort(wss);
     const roomId = `pipeline-empty-${Date.now()}`;
 
@@ -283,32 +283,40 @@ describe("翻訳・配信ルーティング パイプライン結合テスト（
     guest.send(JSON.stringify(makeStart({ sourceLanguage: "en-US", enableTts: false })));
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    // alternatives[0] に transcript を含めない → speechStream.ts が "" として onFinal を呼ぶ
-    const ownerFinalPromise = collectMessages(owner, 1);
-    speechStreams[0].emit("data", {
-      results: [{ alternatives: [{}], isFinal: true }],
-    });
-    const [transcriptFinal] = await ownerFinalPromise;
-    expect(transcriptFinal).toEqual({ type: "transcript_final", text: "" });
-
-    // guest がメッセージを受信しないことを確認するため、一定時間監視する
-    const guestMessages: ServerMessage[] = [];
-    const onGuestMessage = (data: WebSocket.RawData) => {
-      guestMessages.push(JSON.parse(data.toString("utf8")) as ServerMessage);
-    };
-    guest.on("message", onGuestMessage);
-
-    // owner がメッセージを受信しないことも確認する（utterance_committed / message どちらも来ないはず）
+    // owner/guest 双方のメッセージを最初から監視する
+    // （新仕様では transcript_final すら送信されないため、特定メッセージを待つ
+    //   collectMessages() を使うとタイムアウト（20秒）までハングしてしまう。
+    //   代わりに、短い猶予時間内に「何も届かないこと」を確認する構造にする）。
     const ownerMessages: ServerMessage[] = [];
     const onOwnerMessage = (data: WebSocket.RawData) => {
       ownerMessages.push(JSON.parse(data.toString("utf8")) as ServerMessage);
     };
     owner.on("message", onOwnerMessage);
 
+    const guestMessages: ServerMessage[] = [];
+    const onGuestMessage = (data: WebSocket.RawData) => {
+      guestMessages.push(JSON.parse(data.toString("utf8")) as ServerMessage);
+    };
+    guest.on("message", onGuestMessage);
+
+    // alternatives[0] に transcript を含めない → speechStream.ts が "" として onFinal を呼ぶ
+    speechStreams[0].emit("data", {
+      results: [{ alternatives: [{}], isFinal: true }],
+    });
+
+    // STT final 発火直後の非同期処理が発生しないことを確認するための猶予
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    // 新仕様: 空文字finalは Session 側でスキップされるため transcript_final すら送られない
+    expect(ownerMessages).not.toContainEqual(
+      expect.objectContaining({ type: "transcript_final" }),
+    );
+    expect(ownerMessages).toHaveLength(0);
+
     owner.send(JSON.stringify({ type: "commit" }));
 
     // commit直後の非同期処理が発生しないことを確認するための猶予（イベントループ数サイクル分）
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await new Promise((resolve) => setTimeout(resolve, 150));
 
     owner.off("message", onOwnerMessage);
     guest.off("message", onGuestMessage);

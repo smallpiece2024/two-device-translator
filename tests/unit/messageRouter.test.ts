@@ -324,4 +324,47 @@ describe("routeUtterance() — TTS失敗", () => {
     expect(okMessages[0].type).toBe("message");
     expect(okMessages[1]).toMatchObject({ type: "audio", data: "base64-audio-ok" });
   });
+
+  test("TTS失敗時のログにparticipantIdとlanguageが含まれ、発話本文（displayText）は含まれない（bd-124.1）", async () => {
+    const consoleErrorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    const speaker = makeParticipant({ participantId: "speaker-1", language: "ja-JP" });
+    const listenerFail = makeParticipant({
+      participantId: "listener-fail",
+      language: "en-US",
+      enableTts: true,
+    });
+    const sensitiveTranslatedText = "SENSITIVE_TRANSLATED_TEXT_SHOULD_NOT_APPEAR_IN_LOG";
+    const deps = makeDeps({
+      translate: jest.fn(async () => sensitiveTranslatedText),
+      synthesize: jest.fn().mockRejectedValue(new Error("tts api down")),
+    });
+
+    try {
+      await routeUtterance(
+        {
+          roomId: "room-1",
+          speaker,
+          listeners: [listenerFail],
+          sourceLanguage: "ja-JP",
+          text: "元の発話本文もログに出てはいけない",
+        },
+        deps,
+      );
+
+      expect(consoleErrorSpy).toHaveBeenCalledTimes(1);
+      const loggedArgs = consoleErrorSpy.mock.calls[0].map((a) => String(a));
+      const loggedString = loggedArgs.join(" ");
+
+      // participantId と language はログに含まれる
+      expect(loggedString).toContain("listener-fail");
+      expect(loggedString).toContain("en-US");
+
+      // 発話本文（displayText = 翻訳結果、および原文）はログに含まれない
+      expect(loggedString).not.toContain(sensitiveTranslatedText);
+      expect(loggedString).not.toContain("元の発話本文もログに出てはいけない");
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
 });

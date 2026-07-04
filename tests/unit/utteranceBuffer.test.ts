@@ -259,6 +259,78 @@ describe("UtteranceBufferManager", () => {
     });
   });
 
+  describe("空文字finalのみのタイマーリーク回帰（bd-124.2）", () => {
+    // addFinal("") はバッファを非空（finals.length === 1, text は空文字）にするため、
+    // 無音タイマー・最大発話タイマーの双方が起動する。commitInternal() は
+    // 確定要否に関わらず必ずタイマーをクリアする実装であることを、
+    // commit/stop/silence/maxSeconds の全経路で jest.getTimerCount() により検証する。
+
+    it("addFinal('') 直後は無音・最大発話の両タイマーが起動している", () => {
+      const { manager } = createManager({ silenceMs: 1000, maxDurationMs: 5000 });
+
+      expect(jest.getTimerCount()).toBe(0);
+      manager.addFinal("");
+      expect(jest.getTimerCount()).toBe(2);
+    });
+
+    it("addFinal('') の後 commit() しても確定イベントは発火せず、タイマーは残留しない（commit経路）", () => {
+      const { manager, onCommit } = createManager({ silenceMs: 1000, maxDurationMs: 5000 });
+
+      manager.addFinal("");
+      manager.commit();
+
+      expect(onCommit).not.toHaveBeenCalled();
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it("addFinal('') の後 stop() しても確定イベントは発火せず、タイマーは残留しない（stop経路）", () => {
+      const { manager, onCommit } = createManager({ silenceMs: 1000, maxDurationMs: 5000 });
+
+      manager.addFinal("");
+      manager.stop();
+
+      expect(onCommit).not.toHaveBeenCalled();
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it("addFinal('') のみで無音タイマーが発火しても確定イベントは発火せず、タイマーは残留しない（silence経路）", () => {
+      const { manager, onCommit } = createManager({ silenceMs: 1000, maxDurationMs: 5000 });
+
+      manager.addFinal("");
+      jest.advanceTimersByTime(1000);
+
+      expect(onCommit).not.toHaveBeenCalled();
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it("addFinal('') のみで最大発話タイマーが発火しても確定イベントは発火せず、タイマーは残留しない（maxSeconds経路）", () => {
+      const { manager, onCommit } = createManager({
+        maxDurationMs: 10_000,
+        silenceMs: 100_000, // 無音確定が先に発火しないよう十分大きくする
+      });
+
+      manager.addFinal("");
+      jest.advanceTimersByTime(10_000);
+
+      expect(onCommit).not.toHaveBeenCalled();
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it("空文字finalが複数回連続しても、commit後にタイマーが残留しない", () => {
+      const { manager, onCommit } = createManager({ silenceMs: 1000, maxDurationMs: 5000 });
+
+      manager.addFinal("");
+      manager.addFinal("");
+      manager.addFinal("");
+      expect(jest.getTimerCount()).toBe(2); // 無音タイマーはリセットされ続けるが最大発話タイマーは維持
+
+      manager.commit();
+
+      expect(onCommit).not.toHaveBeenCalled();
+      expect(jest.getTimerCount()).toBe(0);
+    });
+  });
+
   describe("getText / isEmpty", () => {
     it("addFinal 前は isEmpty() が true, getText() が空文字", () => {
       const { manager } = createManager();

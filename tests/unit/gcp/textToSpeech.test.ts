@@ -12,6 +12,8 @@ import {
   getTtsClient,
   setTtsClient,
   resetTtsClient,
+  verifyTtsVoices,
+  resetVerifiedTtsVoices,
 } from "../../../server/gcp/textToSpeech";
 import { SupportedLanguage } from "../../../server/gcp/types";
 import { TtsVoiceConfig } from "../../../server/gcp/languageCodes";
@@ -39,6 +41,7 @@ beforeEach(() => {
 
 afterEach(() => {
   resetTtsClient();
+  resetVerifiedTtsVoices();
   if (originalEnableTts === undefined) {
     delete process.env.ENABLE_TTS;
   } else {
@@ -444,6 +447,161 @@ describe("setTtsClient() / getTtsClient() / resetTtsClient() — シングルト
     expect(mockClient.synthesizeSpeech).toHaveBeenCalledTimes(1);
     const decoded = Buffer.from(result!, "base64");
     expect(Array.from(decoded)).toEqual(Array.from(bytes));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 12. verifyTtsVoices() — listVoices() によるボイス名の実在検証（bd-124.1）
+// ---------------------------------------------------------------------------
+describe("verifyTtsVoices() — listVoices() によるボイス名の実在検証", () => {
+  let warnSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  function makeMockClientWithListVoices(
+    listVoicesImpl: (args: { languageCode: string }) => Promise<[{ voices: { name: string }[] }]>,
+  ) {
+    return {
+      synthesizeSpeech: jest.fn().mockResolvedValue([{ audioContent: new Uint8Array([1, 2, 3]) }]),
+      listVoices: jest.fn().mockImplementation(listVoicesImpl),
+    };
+  }
+
+  test("(a) listVoices成功＋ボイス一致: verifyTtsVoices()の戻り値マップに voice.name（レジストリのttsVoiceName）が含まれる", async () => {
+    const mockClient = makeMockClientWithListVoices(async ({ languageCode }) => [
+      {
+        voices:
+          languageCode === "ja-JP"
+            ? [{ name: "ja-JP-Neural2-B" }]
+            : [{ name: "en-US-Neural2-C" }],
+      },
+    ]);
+
+    const result = await verifyTtsVoices(mockClient as never);
+
+    expect(result.get("ja-JP")).toBe("ja-JP-Neural2-B");
+    expect(result.get("en-US")).toBe("en-US-Neural2-C");
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  test("(a) 検証済みボイス名は synthesizeSpeechToBase64() の voice.name としてそのまま使用される", async () => {
+    const mockClient = makeMockClientWithListVoices(async ({ languageCode }) => [
+      {
+        voices:
+          languageCode === "en-US" ? [{ name: "en-US-Neural2-C" }] : [{ name: "unrelated" }],
+      },
+    ]);
+
+    await synthesizeSpeechToBase64("hello", "en-US", { client: mockClient as never });
+
+    const callArg = mockClient.synthesizeSpeech.mock.calls[0][0] as {
+      voice: { name?: string };
+    };
+    expect(callArg.voice.name).toBe("en-US-Neural2-C");
+  });
+
+  test("(b) listVoicesが返すボイス一覧にレジストリのttsVoiceNameが含まれない場合、警告を出しvoice.nameなしへフォールバックする", async () => {
+    const mockClient = makeMockClientWithListVoices(async () => [
+      { voices: [{ name: "some-other-voice" }] },
+    ]);
+
+    const result = await verifyTtsVoices(mockClient as never);
+
+    expect(result.has("ja-JP")).toBe(false);
+    expect(result.has("en-US")).toBe(false);
+    expect(warnSpy).toHaveBeenCalled();
+    expect(warnSpy.mock.calls.some((c) => String(c[0]).includes("voice not found"))).toBe(true);
+  });
+
+  test("(b) ボイス不一致時は synthesizeSpeechToBase64() が voice.name を含めずに合成を継続する", async () => {
+    const mockClient = makeMockClientWithListVoices(async () => [
+      { voices: [{ name: "some-other-voice" }] },
+    ]);
+
+    const result = await synthesizeSpeechToBase64("hello", "en-US", { client: mockClient as never });
+
+    expect(result).not.toBeNull();
+    const callArg = mockClient.synthesizeSpeech.mock.calls[0][0] as {
+      voice: { name?: string };
+    };
+    expect(Object.hasOwn(callArg.voice, "name")).toBe(false);
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
+  test("(c) listVoices()がrejectしても例外を投げず、警告を出してフォールバック（未検証扱い）する", async () => {
+    const mockClient = {
+      synthesizeSpeech: jest.fn().mockResolvedValue([{ audioContent: new Uint8Array([1, 2, 3]) }]),
+      listVoices: jest.fn().mockRejectedValue(new Error("listVoices unavailable")),
+    };
+
+    const result = await verifyTtsVoices(mockClient as never);
+
+    expect(result.size).toBe(0);
+    expect(warnSpy).toHaveBeenCalled();
+    expect(
+      warnSpy.mock.calls.some((c) => String(c[0]).includes("listVoices() failed")),
+    ).toBe(true);
+  });
+
+  test("(c) listVoices()がrejectしても synthesizeSpeechToBase64() は例外を投げず合成を継続する（フォールバック）", async () => {
+    const mockClient = {
+      synthesizeSpeech: jest.fn().mockResolvedValue([{ audioContent: new Uint8Array([1, 2, 3]) }]),
+      listVoices: jest.fn().mockRejectedValue(new Error("listVoices unavailable")),
+    };
+
+    const result = await synthesizeSpeechToBase64("hello", "en-US", { client: mockClient as never });
+
+    expect(result).not.toBeNull();
+    expect(mockClient.synthesizeSpeech).toHaveBeenCalledTimes(1);
+    const callArg = mockClient.synthesizeSpeech.mock.calls[0][0] as {
+      voice: { name?: string };
+    };
+    expect(Object.hasOwn(callArg.voice, "name")).toBe(false);
+  });
+
+  test("(d) 検証結果はキャッシュされ、2回目の verifyTtsVoices() 呼び出しでは listVoices() が再度呼ばれない", async () => {
+    const mockClient = makeMockClientWithListVoices(async ({ languageCode }) => [
+      {
+        voices:
+          languageCode === "ja-JP"
+            ? [{ name: "ja-JP-Neural2-B" }]
+            : [{ name: "en-US-Neural2-C" }],
+      },
+    ]);
+
+    const first = await verifyTtsVoices(mockClient as never);
+    const callCountAfterFirst = mockClient.listVoices.mock.calls.length;
+    expect(callCountAfterFirst).toBeGreaterThan(0);
+
+    const second = await verifyTtsVoices(mockClient as never);
+
+    expect(mockClient.listVoices.mock.calls.length).toBe(callCountAfterFirst);
+    expect(second).toBe(first);
+  });
+
+  test("(d) resetVerifiedTtsVoices() 呼び出し後は再度 listVoices() が呼ばれる", async () => {
+    const mockClient = makeMockClientWithListVoices(async ({ languageCode }) => [
+      {
+        voices:
+          languageCode === "ja-JP"
+            ? [{ name: "ja-JP-Neural2-B" }]
+            : [{ name: "en-US-Neural2-C" }],
+      },
+    ]);
+
+    await verifyTtsVoices(mockClient as never);
+    const callCountAfterFirst = mockClient.listVoices.mock.calls.length;
+
+    resetVerifiedTtsVoices();
+    await verifyTtsVoices(mockClient as never);
+
+    expect(mockClient.listVoices.mock.calls.length).toBe(callCountAfterFirst * 2);
   });
 });
 
