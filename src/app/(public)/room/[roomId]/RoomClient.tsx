@@ -110,6 +110,20 @@ export function RoomClient({
   }, []);
 
   /**
+   * TTSトグル操作時のハンドラ。ローカル状態（audioQueueの再生可否・次回
+   * `start.enableTts` に反映）に加え、既に参加中のサーバーへも即時反映
+   * されるよう `update_settings` を送信する。未接続時は `sendMessage` 側の
+   * ガードにより送信がスキップされる。
+   */
+  const handleTtsToggle = useCallback(
+    (enabled: boolean) => {
+      setTtsEnabled(enabled);
+      sendMessage({ type: "update_settings", enableTts: enabled });
+    },
+    [sendMessage],
+  );
+
+  /**
    * Recorder の内部状態変化をアプリ全体の状態（AppStatus）に連動させる。
    * 録音開始で "recording"、録音停止（idleに戻る）で "joined" に戻す。
    * 既に error 等の場合は誤って上書きしないよう、現在の状態を見て判定する。
@@ -158,6 +172,7 @@ export function RoomClient({
           token: tokenRef.current as string,
           displayName,
           language,
+          enableTts: ttsEnabledRef.current,
         };
         socket.send(JSON.stringify(joinMessage));
       });
@@ -199,6 +214,12 @@ export function RoomClient({
           case "utterance_committed":
             // 確定発話は後続の `message` でバブル化されるため、ここでは何もしない
             // （docs/design/frontend-design.md 状態管理(reducer)節）。
+            break;
+          case "participant_joined":
+            dispatch({ type: "PARTICIPANT_JOINED", participant: message.participant });
+            break;
+          case "participant_left":
+            dispatch({ type: "PARTICIPANT_LEFT", participantId: message.participantId });
             break;
           case "message":
             dispatch({ type: "MESSAGE", message: toMessageView(message) });
@@ -285,7 +306,7 @@ export function RoomClient({
       )}
 
       <section className={styles.participants} aria-label="参加者一覧">
-        <p>参加者: {state.participants.length}人</p>
+        <p>参加者: {state.participants.filter((p) => p.present).length}人</p>
       </section>
 
       <section className={styles.controls} aria-label="設定">
@@ -294,7 +315,7 @@ export function RoomClient({
           onChange={setCurrentLanguage}
           disabled={isRecording}
         />
-        <TTSToggle enabled={ttsEnabled} onChange={setTtsEnabled} />
+        <TTSToggle enabled={ttsEnabled} onChange={handleTtsToggle} />
       </section>
 
       <Recorder
