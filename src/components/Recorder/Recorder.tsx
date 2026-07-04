@@ -31,7 +31,7 @@ export const DEFAULT_MAX_CHARS = 80;
 export const DEFAULT_MAX_SECONDS = 10;
 
 /** 録音操作の内部状態 */
-export type RecorderStatus = "idle" | "recording" | "error";
+export type RecorderStatus = "idle" | "starting" | "recording" | "error";
 
 export interface RecorderProps {
   /** 自分の話す言語（`start.sourceLanguage` に使う） */
@@ -79,6 +79,14 @@ export function Recorder({
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const isUnmountedRef = useRef(false);
+  /**
+   * 開始処理の多重実行防止用フラグ。
+   * `getUserMedia` はマイク許可ダイアログ表示中（数百ms〜数秒）待たされるため、
+   * `status` の state 更新（非同期・バッチ処理）だけに頼ると、その間の連打で
+   * handleStart が並行実行されてしまう。ref による同期的なガードで
+   * 呼び出し開始時点から確実にブロックする（finally で解除）。
+   */
+  const isStartingRef = useRef(false);
 
   const sendMessageRef = useRef(sendMessage);
   useEffect(() => {
@@ -110,20 +118,29 @@ export function Recorder({
   }
 
   const handleStart = useCallback(async () => {
-    if (disabled || status === "recording") return;
+    if (disabled || status === "recording" || status === "starting" || isStartingRef.current) {
+      return;
+    }
+    // getUserMedia 呼び出し前に同期的にガードをセットする（連打対策）。
+    isStartingRef.current = true;
+    setStatus("starting");
 
     let stream: MediaStream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch (err) {
-      if (isUnmountedRef.current) return;
-      const message =
-        err instanceof Error
-          ? `マイクへのアクセスが拒否されました: ${err.message}`
-          : "マイクへのアクセスに失敗しました";
-      setErrorMessage(message);
-      setStatus("error");
-      return;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (err) {
+        if (isUnmountedRef.current) return;
+        const message =
+          err instanceof Error
+            ? `マイクへのアクセスが拒否されました: ${err.message}`
+            : "マイクへのアクセスに失敗しました";
+        setErrorMessage(message);
+        setStatus("error");
+        return;
+      }
+    } finally {
+      isStartingRef.current = false;
     }
 
     if (isUnmountedRef.current) {
@@ -182,6 +199,7 @@ export function Recorder({
   }, [status]);
 
   const isRecording = status === "recording";
+  const isStarting = status === "starting";
 
   return (
     <div className={styles.recorder}>
@@ -206,10 +224,10 @@ export function Recorder({
           <button
             type="button"
             onClick={handleStart}
-            disabled={disabled}
+            disabled={disabled || isStarting}
             className={`${styles.btn} ${styles.btnStart}`}
           >
-            開始
+            {isStarting ? "開始中..." : "開始"}
           </button>
         )}
 
@@ -242,6 +260,8 @@ function statusLabel(status: RecorderStatus): string {
   switch (status) {
     case "idle":
       return "待機中";
+    case "starting":
+      return "開始中...";
     case "recording":
       return "録音中";
     case "error":
