@@ -44,11 +44,11 @@
 **今すぐ必要なのは 3-1（GCP の dev プロジェクト）だけ。** 残りはフェーズ進行に合わせて作れば良い。
 
 ### 3-1. GCP dev プロジェクト（Phase 1 のローカル開発に必要）
-- [ ] GCP の課金を有効化する
-- [ ] **予算アラートを設定する（例: 月$10）** ← 従量課金の事故防止。最初にやる
-- [ ] プロジェクト `two-device-translator-dev` を作成する
-- [ ] API を3つ有効化する: Cloud Speech-to-Text / Cloud Translation / Cloud Text-to-Speech
-- [ ] ローカル認証: `gcloud auth application-default login` → `gcloud auth application-default set-quota-project <dev-project-id>`
+- [x] GCP の課金を有効化する
+- [x] **予算アラートを設定する（例: 月$10）** ← 従量課金の事故防止。最初にやる
+- [x] プロジェクト `two-device-translator-dev` を作成する
+- [x] API を3つ有効化する: Cloud Speech-to-Text / Cloud Translation / Cloud Text-to-Speech
+- [x] ローカル認証: `gcloud auth application-default login` → `gcloud auth application-default set-quota-project <dev-project-id>`
 
 ### 3-2. Supabase（Phase 2 の認証・DB実装までに）
 - [ ] Supabase アカウントを作成する（GitHub ログイン可）
