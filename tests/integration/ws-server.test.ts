@@ -65,7 +65,7 @@ describe("WS server (integration smoke test)", () => {
     });
   });
 
-  it("ping以外のメッセージを送っても切断されず、pongは返らない", (done) => {
+  it("ping以外の不正なメッセージを送るとerror(fatal:false)が返り、接続は維持される", (done) => {
     wss = startServer(0, HOST);
 
     wss.once("listening", () => {
@@ -77,20 +77,27 @@ describe("WS server (integration smoke test)", () => {
       const port = address.port;
 
       const client = new WebSocket(`ws://${HOST}:${port}`);
-      let received = false;
 
       client.on("open", () => {
+        // "hello" はJSONとしてparseできない → error(fatal:false)が返り、接続は維持される仕様
+        // （websocket-protocol.md参照。join前の他メッセージ/parse失敗はfatal:falseで通知）
         client.send("hello");
-        // pong等の応答が来ないことを確認するため少し待ってから接続状態を確認する
-        setTimeout(() => {
-          expect(received).toBe(false);
-          expect(client.readyState).toBe(WebSocket.OPEN);
-          client.close();
-        }, 200);
       });
 
-      client.on("message", () => {
-        received = true;
+      client.on("message", (data) => {
+        try {
+          const message = JSON.parse(data.toString("utf8"));
+          expect(message).toEqual({
+            type: "error",
+            message: "Invalid message: not a valid JSON text",
+            fatal: false,
+          });
+          // fatal:false のため接続は維持されているはず
+          expect(client.readyState).toBe(WebSocket.OPEN);
+          client.close();
+        } catch (err) {
+          done(err as Error);
+        }
       });
 
       client.on("close", () => {
