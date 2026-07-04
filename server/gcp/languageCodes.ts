@@ -15,8 +15,8 @@ export interface TtsVoiceConfig {
   languageCode: string;
   /** Text-to-Speech の voice.name（未定義の場合は name フィールドを送らない） */
   voiceName?: string;
-  /** Text-to-Speech の voice.ssmlGender */
-  gender: "NEUTRAL" | "MALE" | "FEMALE";
+  /** Text-to-Speech の voice.ssmlGender（未定義の場合は ssmlGender フィールドを送らない） */
+  gender?: "MALE" | "FEMALE";
 }
 
 /**
@@ -51,6 +51,11 @@ export function defaultTranslationCodeOf(language: SupportedLanguage): string {
  */
 export function defaultTtsVoiceConfigOf(language: SupportedLanguage): TtsVoiceConfig {
   const entry = getLanguageEntry(language);
+  if (entry.ttsGender === undefined) {
+    return {
+      languageCode: entry.ttsLanguageCode,
+    };
+  }
   return {
     languageCode: entry.ttsLanguageCode,
     gender: entry.ttsGender,

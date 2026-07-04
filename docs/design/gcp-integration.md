@@ -53,7 +53,7 @@ export interface LanguageEntry {
   translationCode: string;   // Translation v2 の from/to コード
   ttsLanguageCode: string;   // Text-to-Speech voice.languageCode
   ttsVoiceName?: string;     // TTS voice.name
-  ttsGender: "NEUTRAL" | "MALE" | "FEMALE";
+  ttsGender?: "MALE" | "FEMALE"; // 未指定可。NEUTRALはAPI廃止のため使用禁止（bd-124.4）
 }
 export const LanguageEnum = z.enum(["ja-JP", "en-US"]); // MVP。追加時に拡張
 ```
@@ -65,8 +65,10 @@ export const LanguageEnum = z.enum(["ja-JP", "en-US"]); // MVP。追加時に拡
 
 | protocol | 表示名 | STT (recognition) | Translation v2 | TTS languageCode | TTS voice（要 listVoices 検証） | gender |
 |---|---|---|---|---|---|---|
-| `ja-JP` | 日本語 | `ja-JP` | `ja` | `ja-JP` | `ja-JP-Neural2-B` | NEUTRAL |
-| `en-US` | 英語 | `en-US` | `en` | `en-US` | `en-US-Neural2-C` | NEUTRAL |
+| `ja-JP` | 日本語 | `ja-JP` | `ja` | `ja-JP` | `ja-JP-Neural2-B` | （未指定） |
+| `en-US` | 英語 | `en-US` | `en` | `en-US` | `en-US-Neural2-C` | （未指定） |
+
+> **gender の扱い（bd-124.4 で変更）**: Google Cloud TTS は `ssmlGender: NEUTRAL` を拒否する（`INVALID_ARGUMENT: Gender neutral voices are not supported.` を実機確認）。レジストリの `ttsGender` が未指定の場合、synthesize リクエストに `ssmlGender` フィールド自体を含めず、API側の既定ボイス選択に委ねる。NEUTRAL は型からも排除済み。
 
 > MVP の対応言語は日本語・英語（FR-4.4）。将来の拡張（中国語簡繁の script subtag、`fil`→`tl` フォールバック等）はプロトタイプの対応表を流用してレジストリへ追加する。**Translation では `split("-")[0]` 方式を使わずレジストリの `translationCode` を引く**（拡張時に簡繁を区別するため）。
 

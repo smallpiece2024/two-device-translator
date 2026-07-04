@@ -241,12 +241,14 @@ export async function synthesizeSpeechToBase64(
 
   const voice: {
     languageCode: string;
-    ssmlGender: "NEUTRAL" | "MALE" | "FEMALE";
+    ssmlGender?: "MALE" | "FEMALE";
     name?: string;
   } = {
     languageCode: voiceConfig.languageCode,
-    ssmlGender: voiceConfig.gender,
   };
+  if (voiceConfig.gender !== undefined) {
+    voice.ssmlGender = voiceConfig.gender;
+  }
   if (voiceName !== undefined) {
     voice.name = voiceName;
   }

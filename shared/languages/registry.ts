@@ -28,7 +28,7 @@ export interface LanguageEntry {
   ttsLanguageCode: string;
   /** Text-to-Speech voice.name（候補。存在しなければフォールバック） */
   ttsVoiceName?: string;
-  ttsGender: "NEUTRAL" | "MALE" | "FEMALE";
+  ttsGender?: "MALE" | "FEMALE";
 }
 
 export const LANGUAGE_REGISTRY: readonly LanguageEntry[] = [
@@ -39,7 +39,6 @@ export const LANGUAGE_REGISTRY: readonly LanguageEntry[] = [
     translationCode: "ja",
     ttsLanguageCode: "ja-JP",
     ttsVoiceName: "ja-JP-Neural2-B",
-    ttsGender: "NEUTRAL",
   },
   {
     code: "en-US",
@@ -48,7 +47,6 @@ export const LANGUAGE_REGISTRY: readonly LanguageEntry[] = [
     translationCode: "en",
     ttsLanguageCode: "en-US",
     ttsVoiceName: "en-US-Neural2-C",
-    ttsGender: "NEUTRAL",
   },
 ] as const;
 
