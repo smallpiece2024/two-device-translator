@@ -40,13 +40,14 @@ export function defaultTranslationCodeOf(language: SupportedLanguage): string {
  * 言語コードに対応する Text-to-Speech の voice 設定を返す（デフォルト実装）。
  *
  * レジストリの `ttsLanguageCode` / `ttsGender` を引く。`ttsVoiceName` は
- * レジストリ上は候補として定義されているが、
+ * レジストリ上は候補として定義されているが、ここでは意図的に voice.name を
+ * 含めない（未検証の名前を渡すと本番で TTS 呼び出しが失敗しうるため）。
+ *
  * `docs/design/gcp-integration.md`「TTSボイス名の検証方針」が要求する
- * `listVoices()` による実在検証（サーバー起動時のフォールバック解決）が
- * 未実装であるため、ここではデフォルトとして voice.name を指定しない
- * （未検証の名前を渡すと本番で TTS 呼び出しが失敗しうるため）。
- * 検証済みボイス名を使いたい場合は `resolveTtsVoiceConfig` オプションへ
- * 差し替え実装を注入すること。
+ * `listVoices()` による実在検証は `server/gcp/textToSpeech.ts` の
+ * `verifyTtsVoices()` が担い、`synthesizeSpeechToBase64()` 側で検証済み
+ * ボイス名をこの関数の戻り値へマージしてから使用する
+ * （検証失敗時はここでの languageCode+gender のみへフォールバックする）。
  */
 export function defaultTtsVoiceConfigOf(language: SupportedLanguage): TtsVoiceConfig {
   const entry = getLanguageEntry(language);

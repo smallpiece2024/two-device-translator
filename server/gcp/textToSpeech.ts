@@ -1,5 +1,5 @@
 import { TextToSpeechClient } from "@google-cloud/text-to-speech";
-import { SupportedLanguage } from "./types";
+import { SupportedLanguage, LANGUAGE_REGISTRY } from "@shared/index";
 import { defaultTtsVoiceConfigOf, TtsVoiceConfig } from "./languageCodes";
 
 // ============================================================
@@ -66,6 +66,100 @@ export function isTtsEnabled(): boolean {
 }
 
 // ============================================================
+// TTS ボイス名の listVoices 検証
+// ============================================================
+
+/**
+ * `verifyTtsVoices()` の検証結果キャッシュ（言語コード -> 検証済み voice.name）。
+ * モジュールレベルで保持し、以後の合成呼び出しでは再検証しない。
+ */
+let _verifiedVoiceNames: Map<SupportedLanguage, string> | null = null;
+let _verifyPromise: Promise<Map<SupportedLanguage, string>> | null = null;
+
+/**
+ * テスト用: 検証結果キャッシュをリセットする（null に戻す）。
+ */
+export function resetVerifiedTtsVoices(): void {
+  _verifiedVoiceNames = null;
+  _verifyPromise = null;
+}
+
+/**
+ * 言語レジストリ（`shared/languages/registry.ts`）の `ttsVoiceName` が
+ * Text-to-Speech API 上に実在するか `listVoices()` で検証する。
+ *
+ * - 検証結果はモジュールレベルでキャッシュし、以後は再検証しない
+ * - `ttsVoiceName` 未定義の言語は検証をスキップする（対象外）
+ * - ボイスが見つからない場合、および `listVoices()` 自体が失敗した場合は、
+ *   その言語をキャッシュに含めず（未検証扱い）、警告ログを出して処理を継続する。
+ *   **検証失敗が音声合成そのものを止めることはない**（呼び出し側は
+ *   キャッシュに存在しない言語について languageCode+gender のみで
+ *   フォールバック合成する）。
+ *
+ * @param client テスト用クライアント注入（省略時はシングルトンを使用）
+ * @returns 言語コード -> 検証済み voice.name の Map
+ */
+export async function verifyTtsVoices(
+  client?: TextToSpeechClient,
+): Promise<Map<SupportedLanguage, string>> {
+  if (_verifiedVoiceNames !== null) {
+    return _verifiedVoiceNames;
+  }
+  if (_verifyPromise !== null) {
+    return _verifyPromise;
+  }
+
+  const ttsClient = client ?? getTtsClient();
+
+  _verifyPromise = (async () => {
+    const result = new Map<SupportedLanguage, string>();
+
+    for (const entry of LANGUAGE_REGISTRY) {
+      if (entry.ttsVoiceName === undefined) {
+        continue;
+      }
+      try {
+        const [response] = await ttsClient.listVoices({
+          languageCode: entry.ttsLanguageCode,
+        });
+        const available = response.voices ?? [];
+        const found = available.some((v) => v.name === entry.ttsVoiceName);
+        if (found) {
+          result.set(entry.code, entry.ttsVoiceName);
+        } else {
+          console.warn(
+            `[verifyTtsVoices] voice not found for ${entry.code}: "${entry.ttsVoiceName}" ` +
+              "(falling back to languageCode+gender only)",
+          );
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[verifyTtsVoices] listVoices() failed for ${entry.code}: ${message} ` +
+            "(falling back to languageCode+gender only)",
+        );
+      }
+    }
+
+    _verifiedVoiceNames = result;
+    return result;
+  })();
+
+  try {
+    return await _verifyPromise;
+  } catch (err) {
+    // 上記 IIFE 内で例外を全て捕捉しているため通常到達しないが、
+    // 万一の想定外エラーでも合成を止めないよう防御的にフォールバックする。
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`[verifyTtsVoices] unexpected failure: ${message} (falling back)`);
+    _verifiedVoiceNames = new Map();
+    return _verifiedVoiceNames;
+  } finally {
+    _verifyPromise = null;
+  }
+}
+
+// ============================================================
 // 音声合成関数
 // ============================================================
 
@@ -79,6 +173,11 @@ export interface SynthesizeOptions {
    * 注入することで差し替えられる（TODO コメントではなく関数注入で吸収する）。
    */
   resolveTtsVoiceConfig?: (language: SupportedLanguage) => TtsVoiceConfig;
+  /**
+   * テスト用: `verifyTtsVoices()` の差し替え。
+   * 省略時はモジュール本体の `verifyTtsVoices` を使う。
+   */
+  verifyVoicesFn?: (client?: TextToSpeechClient) => Promise<Map<SupportedLanguage, string>>;
 }
 
 /**
@@ -111,10 +210,34 @@ export async function synthesizeSpeechToBase64(
     return null;
   }
 
-  const { client, resolveTtsVoiceConfig = defaultTtsVoiceConfigOf } = options;
+  const {
+    client,
+    resolveTtsVoiceConfig = defaultTtsVoiceConfigOf,
+    verifyVoicesFn = verifyTtsVoices,
+  } = options;
   const ttsClient = client ?? getTtsClient();
 
   const voiceConfig = resolveTtsVoiceConfig(targetLanguage);
+
+  // resolveTtsVoiceConfig が既に voiceName を返している場合（明示的な注入等）は
+  // それをそのまま使用する（従来どおりの挙動）。
+  // 未定義の場合（レジストリ既定の defaultTtsVoiceConfigOf 等）は、
+  // listVoices() で検証済みのボイス名があればそれを使用し、
+  // 未検証・検証失敗時は languageCode+gender のみでフォールバックする
+  // （検証処理自体の失敗で合成を止めない）。
+  let voiceName = voiceConfig.voiceName;
+  if (voiceName === undefined) {
+    try {
+      const verified = await verifyVoicesFn(ttsClient);
+      voiceName = verified.get(targetLanguage);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[synthesize] voice verification failed for ${targetLanguage}: ${message} ` +
+          "(falling back to languageCode+gender only)",
+      );
+    }
+  }
 
   const voice: {
     languageCode: string;
@@ -124,8 +247,8 @@ export async function synthesizeSpeechToBase64(
     languageCode: voiceConfig.languageCode,
     ssmlGender: voiceConfig.gender,
   };
-  if (voiceConfig.voiceName !== undefined) {
-    voice.name = voiceConfig.voiceName;
+  if (voiceName !== undefined) {
+    voice.name = voiceName;
   }
 
   try {

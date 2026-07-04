@@ -162,6 +162,11 @@ export class Session {
         this.utteranceBuffer?.notifyInterim();
       },
       onFinal: (text) => {
+        // 空文字（またはtrim後空）の final はバッファに積む意味がなく、
+        // クライアントへ送信しても表示上意味を持たないためスキップする。
+        if (text.trim().length === 0) {
+          return;
+        }
         this.utteranceBuffer?.addFinal(text);
         this.send({ type: "transcript_final", text });
       },

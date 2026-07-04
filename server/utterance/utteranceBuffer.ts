@@ -166,14 +166,18 @@ export class UtteranceBufferManager {
 
   private commitInternal(reason: UtteranceCommitReason): void {
     const text = this.finals.join("");
-    if (text.length === 0) {
-      // 空バッファは確定しない
-      return;
-    }
 
+    // タイマーは確定要否に関わらず必ずクリアする（空文字finalのみが
+    // 積まれた状態で commit/stop/タイマー発火が起きた場合に、
+    // 無音タイマー・最大発話タイマーが残留してリークするのを防ぐ）。
     this.clearSilenceTimer();
     this.clearMaxDurationTimer();
     this.finals = [];
+
+    if (text.length === 0) {
+      // 空バッファは確定イベントを発火しない
+      return;
+    }
 
     this.onCommit(text, reason);
   }

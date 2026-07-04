@@ -174,8 +174,14 @@ export async function routeUtterance(
         mimeType: "audio/mpeg",
         data: audioBase64,
       });
-    } catch {
-      // TTS失敗: この聞き手の音声のみスキップする（テキスト配信は既に完了しているため継続）
+    } catch (err) {
+      // TTS失敗: この聞き手の音声のみスキップする（テキスト配信は既に完了しているため継続）。
+      // テキスト本文はログに出さず、対象participantId・言語のみ記録する。
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(
+        `[routeUtterance] TTS synthesis failed for participantId=${listener.participantId} language=${listener.language}:`,
+        message,
+      );
       speaker.send({
         type: "error",
         message: "Text-to-speech failed for this utterance. Please try again.",
