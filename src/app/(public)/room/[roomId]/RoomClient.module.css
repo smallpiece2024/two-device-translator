@@ -1,0 +1,72 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1rem;
+  max-width: 640px;
+  margin: 0 auto;
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.title {
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.status {
+  font-size: 0.875rem;
+  color: #555;
+}
+
+.error {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #e33;
+  border-radius: 0.25rem;
+  color: #a00;
+  background-color: #fee;
+}
+
+.participants {
+  font-size: 0.875rem;
+  color: #333;
+}
+
+.messages {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.messageList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.messageItem {
+  display: flex;
+  flex-direction: column;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.5rem;
+  background-color: #f2f2f2;
+}
+
+.speaker {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #666;
+}
+
+.interim {
+  font-size: 0.875rem;
+  color: #999;
+  font-style: italic;
+}
