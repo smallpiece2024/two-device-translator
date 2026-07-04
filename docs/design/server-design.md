@@ -40,8 +40,10 @@ server/
   room/
     roomManager.ts        # 全ルームのレジストリ。ルーム取得/生成/破棄、配信ルーティング
     session.ts            # 1接続=1参加者セッション。STTストリーム・発話バッファ・タイマー
+  utterance/
     utteranceBuffer.ts    # 発話バッファ・発話区切り判定（純粋ロジック。プロトタイプ流用）
   gcp/
+    languageCodes.ts      # Phase1暫定の言語コード変換（lsbタスクで shared/languages に統合予定）
     speechStream.ts       # STT Streaming ラッパー（プロトタイプ流用＋言語検出モード）
     translate.ts          # Cloud Translation ラッパー（プロトタイプ流用）
     textToSpeech.ts       # Cloud Text-to-Speech ラッパー（プロトタイプ流用）
@@ -53,7 +55,7 @@ server/
     llmProvider.ts        # LLM 抽象化（要約生成。[ai-assistant-design.md] 参照）
 ```
 
-言語コード解決は `shared/languages.ts`（レジストリ）を参照する（[gcp-integration.md](./gcp-integration.md#言語レジストリ) 参照）。zodスキーマ・型は `shared/ws-protocol/` を参照する。
+言語コード解決は `shared/languages/registry.ts`（レジストリ）を参照する（[gcp-integration.md](./gcp-integration.md#言語レジストリ) 参照）。zodスキーマ・型は `shared/ws-protocol/` を参照する。
 
 ### 責務分離
 
