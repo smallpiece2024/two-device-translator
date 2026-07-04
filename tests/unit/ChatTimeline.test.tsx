@@ -21,7 +21,7 @@ function buildMessage(overrides: Partial<MessageView> = {}): MessageView {
 
 describe("ChatTimeline", () => {
   it("空状態ではプレースホルダを表示する", () => {
-    render(<ChatTimeline messages={[]} interim={null} ownParticipantId="participant-self" />);
+    render(<ChatTimeline messages={[]} interim={null} />);
 
     expect(screen.getByText("まだメッセージがありません")).toBeInTheDocument();
   });
@@ -35,13 +35,7 @@ describe("ChatTimeline", () => {
       isOwnMessage: true,
     });
 
-    render(
-      <ChatTimeline
-        messages={[message]}
-        interim={null}
-        ownParticipantId="participant-self"
-      />,
-    );
+    render(<ChatTimeline messages={[message]} interim={null} />);
 
     const row = screen.getByText("こんにちは、自分です").closest("li");
     expect(row).toHaveAttribute("data-own", "true");
@@ -51,13 +45,7 @@ describe("ChatTimeline", () => {
   it("相手のメッセージは左寄せバブルで話者名を表示する", () => {
     const message = buildMessage();
 
-    render(
-      <ChatTimeline
-        messages={[message]}
-        interim={null}
-        ownParticipantId="participant-self"
-      />,
-    );
+    render(<ChatTimeline messages={[message]} interim={null} />);
 
     const row = screen.getByText("こんにちは").closest("li");
     expect(row).toHaveAttribute("data-own", "false");
@@ -65,13 +53,7 @@ describe("ChatTimeline", () => {
   });
 
   it("interim（認識途中）は淡色イタリック表示のバブルとして表示される", () => {
-    render(
-      <ChatTimeline
-        messages={[]}
-        interim="今しゃべっている途中の内容"
-        ownParticipantId="participant-self"
-      />,
-    );
+    render(<ChatTimeline messages={[]} interim="今しゃべっている途中の内容" />);
 
     const interimNode = screen.getByText("今しゃべっている途中の内容");
     expect(interimNode).toBeInTheDocument();
@@ -81,13 +63,7 @@ describe("ChatTimeline", () => {
   it("messagesとinterimが両方存在する場合はどちらも表示される", () => {
     const message = buildMessage({ messageId: "msg-both" });
 
-    render(
-      <ChatTimeline
-        messages={[message]}
-        interim="続きを認識中"
-        ownParticipantId="participant-self"
-      />,
-    );
+    render(<ChatTimeline messages={[message]} interim="続きを認識中" />);
 
     expect(screen.getByText("こんにちは")).toBeInTheDocument();
     expect(screen.getByText("続きを認識中")).toBeInTheDocument();

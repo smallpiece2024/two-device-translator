@@ -6,9 +6,11 @@
  * `docs/design/frontend-design.md`（ChatTimeline / MessageBubble節）・
  * `docs/design/styling-design.md`（メッセージバブル節）に従う。
  *
- * RoomClient への結線は行わず、props でメッセージ一覧・認識途中結果・
- * 自分の participantId を受け取る自己完結コンポーネントとする
+ * RoomClient への結線は行わず、props でメッセージ一覧・認識途中結果を
+ * 受け取る自己完結コンポーネントとする
  * （`reducer.ts` の `MessageView` と整合、reducer.ts 自体は変更しない）。
+ * 自分/相手の左右振り分けは各メッセージの `isOwnMessage`（サーバー確定値）を
+ * 直接参照するため、呼び出し元の participantId は不要（YAGNI）。
  */
 import { useEffect, useRef } from "react";
 import type { MessageView } from "@/app/(public)/room/[roomId]/reducer";
@@ -19,13 +21,6 @@ export interface ChatTimelineProps {
   messages: MessageView[];
   /** 自分の認識途中結果（表示専用）。未認識中は null */
   interim: string | null;
-  /**
-   * 自分の participantId。
-   * 自分/相手の左右振り分けは各メッセージの `isOwnMessage`（サーバー確定値）を
-   * 直接参照するため表示ロジックには使わないが、将来の拡張（自分の発言のみ
-   * ハイライトする等）に備えて呼び出し側の意図を明示する目的で受け取る。
-   */
-  ownParticipantId: string;
 }
 
 /** 時刻表示用フォーマット（HH:MM、24時間表記） */
@@ -39,8 +34,7 @@ function formatTime(createdAt: string): string {
   return `${hours}:${minutes}`;
 }
 
-export function ChatTimeline(props: ChatTimelineProps) {
-  const { messages, interim } = props;
+export function ChatTimeline({ messages, interim }: ChatTimelineProps) {
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {

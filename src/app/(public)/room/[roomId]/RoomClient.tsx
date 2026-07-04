@@ -66,23 +66,35 @@ export function RoomClient({
     tokenRef.current = createTemporaryToken();
   }
 
-  // 音声再生キュー（TTS）。マウント中に1つだけ生成し、アンマウント時に破棄する。
-  // 生成時点では Audio 要素は作られない（enqueue 時に初めてファクトリが実行される）
-  // ため、SSR/初回レンダー時に副作用は発生しない。
+  // 音声再生キュー（TTS）。
+  // レンダー時（関数コンポーネント本体）でインスタンスを生成すると、
+  // StrictMode の setup→cleanup→setup 二重実行時に「cleanupでdispose済みの
+  // 単一インスタンス」がrefに残ったまま復活せず、以降 enqueue が恒久的に
+  // 無視される（TTS再生が永久に無効化される）不具合になる。
+  // そのため生成は必ず effect 内で行い、cleanup で dispose + ref を null に
+  // 戻す（＝次回の setup で必ず新しいインスタンスを作り直す）標準パターンとする。
   const audioQueueRef = useRef<AudioPlaybackQueue | null>(null);
-  if (audioQueueRef.current === null) {
-    audioQueueRef.current = createAudioPlaybackQueue();
-  }
+  // effect 実行タイミングに関わらず「生成直後の有効状態」を正しく反映するための
+  // ref（ttsEnabled の最新値をクロージャの stale値なしに参照する）。
+  const ttsEnabledRef = useRef(ttsEnabled);
 
   useEffect(() => {
-    return () => {
-      audioQueueRef.current?.dispose();
-    };
-  }, []);
-
-  useEffect(() => {
+    ttsEnabledRef.current = ttsEnabled;
     audioQueueRef.current?.setEnabled(ttsEnabled);
   }, [ttsEnabled]);
+
+  useEffect(() => {
+    // 生成時点では Audio 要素は作られない（enqueue 時に初めてファクトリが
+    // 実行される）ため、副作用としては軽量。
+    const queue = createAudioPlaybackQueue();
+    queue.setEnabled(ttsEnabledRef.current);
+    audioQueueRef.current = queue;
+
+    return () => {
+      queue.dispose();
+      audioQueueRef.current = null;
+    };
+  }, []);
 
   /**
    * WS へ型安全にメッセージを送信するラッパー。
@@ -293,11 +305,7 @@ export function RoomClient({
         onStatusChange={handleRecorderStatusChange}
       />
 
-      <ChatTimeline
-        messages={state.messages}
-        interim={state.interim || null}
-        ownParticipantId={state.selfParticipantId ?? ""}
-      />
+      <ChatTimeline messages={state.messages} interim={state.interim || null} />
     </div>
   );
 }
