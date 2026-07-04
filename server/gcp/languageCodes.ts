@@ -1,14 +1,13 @@
 import { SupportedLanguage } from "./types";
+import { getLanguageEntry } from "@shared/index";
 
 /**
- * Phase1 用の最小言語コード変換テーブル（ja-JP / en-US 固定）。
+ * `shared/languages/registry.ts`（言語レジストリ）を正本として、
+ * STT / Translation / TTS 用の言語コードを解決するアダプタ層。
  *
- * `docs/design/gcp-integration.md` は `shared/languages.ts` に多言語対応の
- * レジストリを置く設計だが、このタスク時点では未実装のため、ここに Phase1
- * 相当の最小実装を置く。`translate.ts` / `textToSpeech.ts` は解決関数を
- * オプション引数として受け取れるようにしており、レジストリ実装後は
- * その引数に `shared/languages` 由来の関数を注入するだけで差し替えられる
- * （TODO コメントではなく関数注入で吸収する）。
+ * `translate.ts` / `textToSpeech.ts` / `speechStream.ts` はここの関数を
+ * デフォルト実装として使いつつ、`resolveTranslationCode` / `resolveTtsVoiceConfig`
+ * 等のオプション引数で差し替え可能にしている（テスト・将来の多言語拡張向け）。
  */
 
 export interface TtsVoiceConfig {
@@ -20,46 +19,39 @@ export interface TtsVoiceConfig {
   gender: "NEUTRAL" | "MALE" | "FEMALE";
 }
 
-interface LanguageCodeEntry {
-  /** Cloud Speech-to-Text の recognition languageCode */
-  sttCode: string;
-  /** Cloud Translation v2 の from/to コード */
-  translationCode: string;
-  /** Cloud Text-to-Speech の voice 設定 */
-  tts: TtsVoiceConfig;
-}
-
-const DEFAULT_LANGUAGE_CODES: Record<SupportedLanguage, LanguageCodeEntry> = {
-  "ja-JP": {
-    sttCode: "ja-JP",
-    translationCode: "ja",
-    tts: { languageCode: "ja-JP", gender: "NEUTRAL" },
-  },
-  "en-US": {
-    sttCode: "en-US",
-    translationCode: "en",
-    tts: { languageCode: "en-US", gender: "NEUTRAL" },
-  },
-};
-
 /**
  * 言語コードに対応する STT languageCode を返す（デフォルト実装）。
+ * レジストリの `sttCode` を引く。
  */
 export function defaultSttCodeOf(language: SupportedLanguage): string {
-  return DEFAULT_LANGUAGE_CODES[language].sttCode;
+  return getLanguageEntry(language).sttCode;
 }
 
 /**
  * 言語コードに対応する Translation v2 の from/to コードを返す（デフォルト実装）。
- * `split("-")[0]` 方式は使わない（将来 zh-CN/zh-TW 等の拡張時に簡繁を区別するため）。
+ * レジストリの `translationCode` を引く（`split("-")[0]` 方式は使わない。
+ * 将来 zh-CN/zh-TW 等の拡張時に簡繁を区別するため）。
  */
 export function defaultTranslationCodeOf(language: SupportedLanguage): string {
-  return DEFAULT_LANGUAGE_CODES[language].translationCode;
+  return getLanguageEntry(language).translationCode;
 }
 
 /**
  * 言語コードに対応する Text-to-Speech の voice 設定を返す（デフォルト実装）。
+ *
+ * レジストリの `ttsLanguageCode` / `ttsGender` を引く。`ttsVoiceName` は
+ * レジストリ上は候補として定義されているが、
+ * `docs/design/gcp-integration.md`「TTSボイス名の検証方針」が要求する
+ * `listVoices()` による実在検証（サーバー起動時のフォールバック解決）が
+ * 未実装であるため、ここではデフォルトとして voice.name を指定しない
+ * （未検証の名前を渡すと本番で TTS 呼び出しが失敗しうるため）。
+ * 検証済みボイス名を使いたい場合は `resolveTtsVoiceConfig` オプションへ
+ * 差し替え実装を注入すること。
  */
 export function defaultTtsVoiceConfigOf(language: SupportedLanguage): TtsVoiceConfig {
-  return DEFAULT_LANGUAGE_CODES[language].tts;
+  const entry = getLanguageEntry(language);
+  return {
+    languageCode: entry.ttsLanguageCode,
+    gender: entry.ttsGender,
+  };
 }

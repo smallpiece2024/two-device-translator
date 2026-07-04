@@ -118,11 +118,23 @@ export const transcriptFinalSchema = z.object({
   text: z.string(),
 });
 
+/**
+ * 発話確定理由。`server/utterance/utteranceBuffer.ts` の
+ * `UtteranceCommitReason` 型もこのスキーマから導出し、reason の定義を一本化する。
+ */
+export const utteranceCommitReasonSchema = z.enum([
+  "silence",
+  "maxChars",
+  "maxSeconds",
+  "commit",
+  "stop",
+]);
+
 /** 発話区切り確定（話者本人にのみ） */
 export const utteranceCommittedSchema = z.object({
   type: z.literal("utterance_committed"),
   text: z.string(),
-  reason: z.enum(["silence", "maxChars", "maxSeconds", "commit", "stop"]),
+  reason: utteranceCommitReasonSchema,
 });
 
 /** 合成音声（mp3 base64）。TTS ON の聞き手へ配信 */

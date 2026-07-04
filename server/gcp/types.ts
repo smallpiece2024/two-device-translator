@@ -1,17 +1,14 @@
 /**
  * server/gcp/ 内の各ラッパーが共有する型定義。
  *
- * Phase1 では対応言語を ja-JP / en-US に固定する（言語検出モードは Phase2）。
- * `docs/design/gcp-integration.md` の「言語レジストリ」節が正本になる想定だが、
- * このタスク時点では `shared/languages` が未実装のため、
- * `server/gcp/languageCodes.ts` に最小限の変換表を置き、
- * レジストリ実装後は関数引数注入（`resolve*` オプション）で差し替えられるようにしている。
+ * 対応言語（`SupportedLanguage` / `SUPPORTED_LANGUAGES`）は
+ * `shared/languages/registry.ts` を正本とし、ここでは re-export のみ行う
+ * （二重管理しない。`docs/design/gcp-integration.md` の「言語レジストリ」節参照）。
+ * 各言語コードの実際の解決（STT/Translation/TTS 用コード）は
+ * `server/gcp/languageCodes.ts` がレジストリを引いて行う。
  */
-
-/** Phase1 で対応する言語コード（WebSocket プロトコル上の正本と同一の BCP-47 相当コード）。 */
-export const SUPPORTED_LANGUAGES = ["ja-JP", "en-US"] as const;
-
-export type SupportedLanguage = (typeof SUPPORTED_LANGUAGES)[number];
+export type { SupportedLanguage } from "@shared/index";
+export { SUPPORTED_LANGUAGES } from "@shared/index";
 
 /**
  * Cloud Speech-to-Text Streaming ストリームのハンドル。

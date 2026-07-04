@@ -13,14 +13,15 @@
  *
  * @see docs/design/server-design.md 「発話バッファと発話区切り判定（プロトタイプ流用）」
  */
+import type { UtteranceCommitReason } from "@shared/index";
 
-/** 発話が確定した理由 */
-export type UtteranceCommitReason =
-  | "silence"
-  | "maxChars"
-  | "maxSeconds"
-  | "commit"
-  | "stop";
+/**
+ * 発話が確定した理由。
+ * `shared/ws-protocol/schema.ts` の `utteranceCommitReasonSchema`（延いては
+ * `utterance_committed.reason` のプロトコル定義）を正本とし、ここでは
+ * re-export のみ行う（reason の定義を二重管理しない）。
+ */
+export type { UtteranceCommitReason };
 
 /**
  * 発話バッファの設定。すべてミリ秒/文字数の実値で保持する

@@ -4,9 +4,12 @@ import {
   clientMessageSchema,
   type ServerMessage,
 } from "@shared/index";
-import { RoomManager } from "./room/roomManager";
+import { RoomManager, type Room } from "./room/roomManager";
 import type { Session } from "./room/session";
 import { verifyJoin as defaultVerifyJoin, type VerifyJoinFn } from "./auth/verifyParticipant";
+import { translateText } from "./gcp/translate";
+import { synthesizeSpeechToBase64 } from "./gcp/textToSpeech";
+import { routeUtterance, type RoutingParticipant } from "./routing/messageRouter";
 
 const WS_PORT = parseInt(process.env.WS_PORT ?? "3001", 10);
 const WS_HOST = "127.0.0.1";
@@ -19,14 +22,55 @@ export interface StartServerOptions {
   maxParticipants?: number;
 }
 
+/** `Session` から `messageRouter.ts` の `RoutingParticipant` へ変換する */
+function toRoutingParticipant(session: Session): RoutingParticipant {
+  return {
+    participantId: session.participantId,
+    displayName: session.displayName,
+    language: session.language,
+    enableTts: session.enableTts,
+    send: (message: ServerMessage) => session.send(message),
+  };
+}
+
+/**
+ * 発話区切り確定時の翻訳・配信ルーティングを実行する。
+ * ルームが既に存在しない（例: 話者以外全員退室済み）場合は何もしない。
+ */
+function routeCommittedUtterance(room: Room, speakerSession: Session, text: string): void {
+  const listeners = Array.from(room.participants.values())
+    .filter((s) => s.participantId !== speakerSession.participantId)
+    .map(toRoutingParticipant);
+
+  // 配信を待たせない（会話テンポ優先、NFR-2.2）。エラーは routeUtterance 内部で
+  // 話者への error 送信として処理されるため、ここでは失敗をログ出力するのみ。
+  void routeUtterance(
+    {
+      roomId: room.roomId,
+      speaker: toRoutingParticipant(speakerSession),
+      listeners,
+      sourceLanguage: speakerSession.language,
+      text,
+    },
+    {
+      translate: translateText,
+      synthesize: synthesizeSpeechToBase64,
+    },
+  ).catch((err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[WS Server] routeUtterance failed unexpectedly:", message);
+  });
+}
+
 /**
  * WebSocketServer を起動して返す。
  * テスト容易性のため関数として切り出す（index.ts から export）。
  *
  * 接続受理 → join 待ち（join前の他メッセージは error(fatal:false)）→
- * join 受信で RoomManager に登録 → joined 応答、までを扱う。
- * `start`/`audio` 等の録音セッション処理・GCP連携は別タスクで拡張する
- * （docs/design/server-design.md「フェーズ対応」Phase1参照）。
+ * join 受信で RoomManager に登録 → joined 応答 →
+ * start（STTストリーム開始・発話バッファ初期化）→ audio（STT書き込み）→
+ * 発話区切り確定（翻訳・配信ルーティング）→ commit/stop、までを扱う
+ * （docs/design/server-design.md「セッションライフサイクル」参照）。
  */
 export function startServer(
   port: number = WS_PORT,
@@ -125,17 +169,67 @@ export function startServer(
         return;
       }
 
-      // join 済み: start/audio/commit/stop 等の処理は本タスクの範囲外
-      // （RoomManager/セッション管理のみを扱う。別タスクで拡張する）。
-      console.log(
-        `[WS Server] Received message (not handled in this phase): ${message.type}`,
-      );
+      // join 済み: 録音セッション（start/audio/commit/stop）を扱う
+      switch (message.type) {
+        case "start": {
+          session.startRecording(message, {
+            onUtteranceCommitted: (utteranceText) => {
+              if (!roomId || !session) {
+                return;
+              }
+              const room = roomManager.getRoom(roomId);
+              if (!room) {
+                return;
+              }
+              routeCommittedUtterance(room, session, utteranceText);
+            },
+          });
+          return;
+        }
+
+        case "audio": {
+          if (!session.isRecording) {
+            sendError("start message is required before audio", false);
+            return;
+          }
+          session.writeAudioChunk(message.data);
+          return;
+        }
+
+        case "commit": {
+          if (!session.isRecording) {
+            sendError("start message is required before commit", false);
+            return;
+          }
+          session.commitUtterance();
+          return;
+        }
+
+        case "stop": {
+          if (!session.isRecording) {
+            sendError("start message is required before stop", false);
+            return;
+          }
+          session.stopRecording();
+          return;
+        }
+
+        default:
+          // update_settings / request_end 等の Phase2/3 メッセージは別タスクで扱う
+          console.log(
+            `[WS Server] Received message (not handled in this phase): ${message.type}`,
+          );
+          return;
+      }
     });
 
     ws.on("close", (code: number, reason: Buffer) => {
       console.log(
         `[WS Server] Client disconnected (code=${code}, reason=${reason.toString()})`,
       );
+      if (session) {
+        session.destroyRecording();
+      }
       if (session && roomId) {
         roomManager.leave(roomId, session.participantId);
       }

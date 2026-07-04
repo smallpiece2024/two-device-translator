@@ -15,6 +15,7 @@ import type {
   joinedSchema,
   transcriptInterimSchema,
   transcriptFinalSchema,
+  utteranceCommitReasonSchema,
   utteranceCommittedSchema,
   messageSchema,
   audioServerSchema,
@@ -35,6 +36,8 @@ export type ParticipantSummary = z.infer<typeof participantSummarySchema>;
 export type JoinedMessage = z.infer<typeof joinedSchema>;
 export type TranscriptInterimMessage = z.infer<typeof transcriptInterimSchema>;
 export type TranscriptFinalMessage = z.infer<typeof transcriptFinalSchema>;
+/** 発話確定理由。`server/utterance/utteranceBuffer.ts` の型定義もこれを参照する */
+export type UtteranceCommitReason = z.infer<typeof utteranceCommitReasonSchema>;
 export type UtteranceCommittedMessage = z.infer<
   typeof utteranceCommittedSchema
 >;
