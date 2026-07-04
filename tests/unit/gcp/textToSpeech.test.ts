@@ -130,32 +130,57 @@ describe("synthesizeSpeechToBase64() — MP3 / audioConfig の検証", () => {
 // 3. synthesizeSpeechToBase64() — 言語→voice設定（Phase1 デフォルト実装）
 // ---------------------------------------------------------------------------
 describe("synthesizeSpeechToBase64() — 言語→voice設定（デフォルト実装）", () => {
-  test("'en-US' を渡すと voice.languageCode が 'en-US'、name フィールドは存在しない", async () => {
+  test("'en-US' を渡すと voice.languageCode が 'en-US'、name / ssmlGender フィールドは存在しない", async () => {
     delete process.env.ENABLE_TTS;
     const mockClient = makeMockClient();
 
     await synthesizeSpeechToBase64("hello", "en-US", { client: mockClient as never });
 
     const callArg = mockClient.synthesizeSpeech.mock.calls[0][0] as {
-      voice: { languageCode: string; ssmlGender: string; name?: string };
+      voice: { languageCode: string; ssmlGender?: string; name?: string };
     };
     expect(callArg.voice.languageCode).toBe("en-US");
-    expect(callArg.voice.ssmlGender).toBe("NEUTRAL");
+    // bd-124.4: レジストリの ttsGender が未指定（gender未設定）の言語では、
+    // voice に ssmlGender フィールド自体を含めない（GCP TTS は
+    // ssmlGender: "NEUTRAL" を拒否するため）。
+    expect(Object.hasOwn(callArg.voice, "ssmlGender")).toBe(false);
     expect(Object.hasOwn(callArg.voice, "name")).toBe(false);
   });
 
-  test("'ja-JP' を渡すと voice.languageCode が 'ja-JP'、name フィールドは存在しない", async () => {
+  test("'ja-JP' を渡すと voice.languageCode が 'ja-JP'、name / ssmlGender フィールドは存在しない", async () => {
     delete process.env.ENABLE_TTS;
     const mockClient = makeMockClient();
 
     await synthesizeSpeechToBase64("こんにちは", "ja-JP", { client: mockClient as never });
 
     const callArg = mockClient.synthesizeSpeech.mock.calls[0][0] as {
-      voice: { languageCode: string; ssmlGender: string; name?: string };
+      voice: { languageCode: string; ssmlGender?: string; name?: string };
     };
     expect(callArg.voice.languageCode).toBe("ja-JP");
-    expect(callArg.voice.ssmlGender).toBe("NEUTRAL");
+    // bd-124.4: レジストリの ttsGender が未指定（gender未設定）の言語では、
+    // voice に ssmlGender フィールド自体を含めない（GCP TTS は
+    // ssmlGender: "NEUTRAL" を拒否するため）。
+    expect(Object.hasOwn(callArg.voice, "ssmlGender")).toBe(false);
     expect(Object.hasOwn(callArg.voice, "name")).toBe(false);
+  });
+
+  test("bd-124.4 回帰テスト: デフォルト設定での synthesize リクエストには ssmlGender が含まれず、languageCode のみが正しく渡る", async () => {
+    // 背景: 実機で Google Cloud TTS が ssmlGender: "NEUTRAL" を拒否する
+    // (`INVALID_ARGUMENT: Gender neutral voices are not supported.`) バグが
+    // 発見された。registry の ttsGender: "NEUTRAL" がデフォルト経路
+    // (defaultTtsVoiceConfigOf → synthesize) を通じて常にAPIエラーを
+    // 引き起こしていたため、gender未指定時は ssmlGender フィールド自体を
+    // 送らない仕様に修正した。この回帰を検知する。
+    delete process.env.ENABLE_TTS;
+    const mockClient = makeMockClient();
+
+    await synthesizeSpeechToBase64("hello world", "en-US", { client: mockClient as never });
+
+    const callArg = mockClient.synthesizeSpeech.mock.calls[0][0] as {
+      voice: Record<string, unknown>;
+    };
+    expect(callArg.voice).toEqual({ languageCode: "en-US" });
+    expect(JSON.stringify(callArg.voice)).not.toContain("NEUTRAL");
   });
 });
 

@@ -31,17 +31,22 @@ describe("defaultTranslationCodeOf()", () => {
 });
 
 describe("defaultTtsVoiceConfigOf()", () => {
-  test("ja-JP の voice 設定は { languageCode: 'ja-JP', gender: 'NEUTRAL' } で voiceName が未定義", () => {
+  // bd-124.4: registry の ja-JP / en-US は ttsGender 未指定になったため、
+  // defaultTtsVoiceConfigOf() の戻り値にも gender フィールドを含めない
+  // （GCP TTS が ssmlGender: "NEUTRAL" を拒否するバグの修正）。
+  test("ja-JP の voice 設定は { languageCode: 'ja-JP' } のみで gender / voiceName が未定義", () => {
     const config = defaultTtsVoiceConfigOf("ja-JP");
     expect(config.languageCode).toBe("ja-JP");
-    expect(config.gender).toBe("NEUTRAL");
+    expect(config.gender).toBeUndefined();
+    expect(Object.hasOwn(config, "gender")).toBe(false);
     expect(config.voiceName).toBeUndefined();
   });
 
-  test("en-US の voice 設定は { languageCode: 'en-US', gender: 'NEUTRAL' } で voiceName が未定義", () => {
+  test("en-US の voice 設定は { languageCode: 'en-US' } のみで gender / voiceName が未定義", () => {
     const config = defaultTtsVoiceConfigOf("en-US");
     expect(config.languageCode).toBe("en-US");
-    expect(config.gender).toBe("NEUTRAL");
+    expect(config.gender).toBeUndefined();
+    expect(Object.hasOwn(config, "gender")).toBe(false);
     expect(config.voiceName).toBeUndefined();
   });
 

@@ -47,8 +47,24 @@ describe("languages registry", () => {
         expect(entry.sttCode).toBeTruthy();
         expect(entry.translationCode).toBeTruthy();
         expect(entry.ttsLanguageCode).toBeTruthy();
-        expect(["NEUTRAL", "MALE", "FEMALE"]).toContain(entry.ttsGender);
       }
+    });
+
+    it("ttsGender は未指定（undefined）または MALE/FEMALE のみを許容する（bd-124.4: NEUTRALは不許可）", () => {
+      // 背景: Google Cloud TTS が ssmlGender: "NEUTRAL" を拒否する
+      // (`INVALID_ARGUMENT: Gender neutral voices are not supported.`) ため、
+      // レジストリ上で NEUTRAL を指定することを禁止する。
+      for (const entry of LANGUAGE_REGISTRY) {
+        expect(["MALE", "FEMALE", undefined]).toContain(entry.ttsGender);
+        expect(entry.ttsGender).not.toBe("NEUTRAL");
+      }
+    });
+
+    it("ja-JP と en-US の ttsGender は未指定（gender未設定）である", () => {
+      const ja = LANGUAGE_REGISTRY.find((e) => e.code === "ja-JP");
+      const en = LANGUAGE_REGISTRY.find((e) => e.code === "en-US");
+      expect(ja?.ttsGender).toBeUndefined();
+      expect(en?.ttsGender).toBeUndefined();
     });
   });
 
