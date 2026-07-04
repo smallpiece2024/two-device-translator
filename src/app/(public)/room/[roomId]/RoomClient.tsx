@@ -1,17 +1,23 @@
 "use client";
 
 /**
- * トークルーム画面の最上位 Client Component（骨格）。
+ * トークルーム画面の最上位 Client Component。
  *
  * Phase1 スコープ: WS 接続確立 → `join` 送信 → `joined` 受信で状態初期化、
- * および reducer による状態管理のみを担う。マイク入力・チャット表示UI・
- * 音声再生は後続タスクで拡張する（`docs/design/frontend-design.md` 参照）。
+ * reducer による状態管理、および各UIコンポーネント（ChatTimeline / Recorder /
+ * LanguageSelector / TTSToggle / audioPlaybackQueue）の結線を担う
+ * （`docs/design/frontend-design.md` 参照）。
  *
  * 認可チェックは Phase2 の範囲（`docs/design/security-design.md` Phase1行）
  * のため、このタスクでは token を仮発行して誰でも入室できる簡易動作とする。
  */
-import { useEffect, useReducer, useRef } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { serverMessageSchema, type ClientMessage, type SupportedLanguage } from "@shared/index";
+import { ChatTimeline } from "@/components/ChatTimeline/ChatTimeline";
+import { Recorder, type RecorderStatus } from "@/components/Recorder/Recorder";
+import { LanguageSelector } from "@/components/LanguageSelector/LanguageSelector";
+import { TTSToggle } from "@/components/TTSToggle/TTSToggle";
+import { createAudioPlaybackQueue, type AudioPlaybackQueue } from "@/lib/audioPlaybackQueue";
 import { initialRoomState, roomReducer, toMessageView, type AppStatus } from "./reducer";
 import styles from "./RoomClient.module.css";
 
@@ -44,6 +50,14 @@ export function RoomClient({
 }: RoomClientProps) {
   const [state, dispatch] = useReducer(roomReducer, initialRoomState);
 
+  // ルーム内での言語変更（次の `start` 送信に反映）は join 時の言語とは
+  // 独立させる。join 用の `language` prop を変更しても再接続はしない
+  // （下記 useEffect の依存配列は `language` prop のまま＝初回参加時のみ使用）。
+  const [currentLanguage, setCurrentLanguage] = useState<SupportedLanguage>(language);
+  // 自分が聞き手としてTTSを受け取るかどうか（`start.enableTts` および
+  // audioPlaybackQueue の再生可否の両方に連動する）。
+  const [ttsEnabled, setTtsEnabled] = useState(true);
+
   const socketRef = useRef<WebSocket | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -51,6 +65,53 @@ export function RoomClient({
   if (tokenRef.current === undefined) {
     tokenRef.current = createTemporaryToken();
   }
+
+  // 音声再生キュー（TTS）。マウント中に1つだけ生成し、アンマウント時に破棄する。
+  // 生成時点では Audio 要素は作られない（enqueue 時に初めてファクトリが実行される）
+  // ため、SSR/初回レンダー時に副作用は発生しない。
+  const audioQueueRef = useRef<AudioPlaybackQueue | null>(null);
+  if (audioQueueRef.current === null) {
+    audioQueueRef.current = createAudioPlaybackQueue();
+  }
+
+  useEffect(() => {
+    return () => {
+      audioQueueRef.current?.dispose();
+    };
+  }, []);
+
+  useEffect(() => {
+    audioQueueRef.current?.setEnabled(ttsEnabled);
+  }, [ttsEnabled]);
+
+  /**
+   * WS へ型安全にメッセージを送信するラッパー。
+   * 未接続（OPEN以外）の場合は送信をスキップする（Recorder等からの誤送信防止）。
+   */
+  const sendMessage = useCallback((message: ClientMessage) => {
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      console.warn("[RoomClient] WS未接続のため送信をスキップしました:", message.type);
+      return;
+    }
+    socket.send(JSON.stringify(message));
+  }, []);
+
+  /**
+   * Recorder の内部状態変化をアプリ全体の状態（AppStatus）に連動させる。
+   * 録音開始で "recording"、録音停止（idleに戻る）で "joined" に戻す。
+   * 既に error 等の場合は誤って上書きしないよう、現在の状態を見て判定する。
+   */
+  const handleRecorderStatusChange = useCallback(
+    (recorderStatus: RecorderStatus) => {
+      if (recorderStatus === "recording") {
+        dispatch({ type: "STATUS_CHANGED", status: "recording" });
+      } else if (recorderStatus === "idle" && state.status === "recording") {
+        dispatch({ type: "STATUS_CHANGED", status: "joined" });
+      }
+    },
+    [state.status],
+  );
 
   useEffect(() => {
     // StrictMode の mount→cleanup→mount 二重実行に対応するため、
@@ -131,7 +192,12 @@ export function RoomClient({
             dispatch({ type: "MESSAGE", message: toMessageView(message) });
             break;
           case "audio":
-            // 音声再生は後続タスク（useAudioQueue）で扱う。
+            // 合成音声（TTS）をキューに追加する。
+            // オートプレイ制約への配慮: 初回の音声はユーザー操作（録音開始ボタン
+            // 押下）を起点とした発話に対する応答として届くため、ブラウザの
+            // autoplay制限（ユーザー操作を起点としない再生のブロック）には
+            // 通常抵触しない。
+            audioQueueRef.current?.enqueue(message.data);
             break;
           case "error":
             dispatch({ type: "ERROR", message: message.message, fatal: message.fatal });
@@ -188,6 +254,9 @@ export function RoomClient({
     };
   }, [roomId, wsUrl, role, displayName, language]);
 
+  const isRecording = state.status === "recording";
+  const isJoinedOrRecording = state.status === "joined" || state.status === "recording";
+
   return (
     <div className={styles.container}>
       <header className={styles.header}>
@@ -207,17 +276,28 @@ export function RoomClient({
         <p>参加者: {state.participants.length}人</p>
       </section>
 
-      <section className={styles.messages} aria-label="メッセージ一覧">
-        <ul className={styles.messageList}>
-          {state.messages.map((message) => (
-            <li key={message.messageId} className={styles.messageItem}>
-              <span className={styles.speaker}>{message.speakerName}</span>
-              <span>{message.displayText}</span>
-            </li>
-          ))}
-        </ul>
-        {state.interim && <p className={styles.interim}>{state.interim}</p>}
+      <section className={styles.controls} aria-label="設定">
+        <LanguageSelector
+          value={currentLanguage}
+          onChange={setCurrentLanguage}
+          disabled={isRecording}
+        />
+        <TTSToggle enabled={ttsEnabled} onChange={setTtsEnabled} />
       </section>
+
+      <Recorder
+        language={currentLanguage}
+        sendMessage={sendMessage}
+        disabled={!isJoinedOrRecording}
+        enableTts={ttsEnabled}
+        onStatusChange={handleRecorderStatusChange}
+      />
+
+      <ChatTimeline
+        messages={state.messages}
+        interim={state.interim || null}
+        ownParticipantId={state.selfParticipantId ?? ""}
+      />
     </div>
   );
 }

@@ -32,6 +32,7 @@ describe("ChatTimeline", () => {
       speakerParticipantId: "participant-self",
       speakerName: "自分",
       displayText: "こんにちは、自分です",
+      isOwnMessage: true,
     });
 
     render(

@@ -36,37 +36,9 @@
   color: #333;
 }
 
-.messages {
+.controls {
   display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.messageList {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
-
-.messageItem {
-  display: flex;
-  flex-direction: column;
-  padding: 0.5rem 0.75rem;
-  border-radius: 0.5rem;
-  background-color: #f2f2f2;
-}
-
-.speaker {
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: #666;
-}
-
-.interim {
-  font-size: 0.875rem;
-  color: #999;
-  font-style: italic;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
 }

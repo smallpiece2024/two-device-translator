@@ -53,6 +53,13 @@ export interface RecorderProps {
   maxChars?: number;
   /** 発話区切り: 最大秒数。既定 `DEFAULT_MAX_SECONDS` */
   maxSeconds?: number;
+  /**
+   * 録音の内部状態（`RecorderStatus`）が変化するたびに呼ばれるコールバック。
+   * 呼び出し側（RoomClient）が録音開始/停止をアプリ全体の状態（`AppStatus`）に
+   * 連動させるためのフック。結線は呼び出し側の責務とし、本コンポーネントは
+   * 自身の状態変化を通知するのみ。
+   */
+  onStatusChange?: (status: RecorderStatus) => void;
 }
 
 /**
@@ -70,6 +77,7 @@ export function Recorder({
   silenceMs = DEFAULT_SILENCE_MS,
   maxChars = DEFAULT_MAX_CHARS,
   maxSeconds = DEFAULT_MAX_SECONDS,
+  onStatusChange,
 }: RecorderProps) {
   const [status, setStatus] = useState<RecorderStatus>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -92,6 +100,15 @@ export function Recorder({
   useEffect(() => {
     sendMessageRef.current = sendMessage;
   }, [sendMessage]);
+
+  const onStatusChangeRef = useRef(onStatusChange);
+  useEffect(() => {
+    onStatusChangeRef.current = onStatusChange;
+  }, [onStatusChange]);
+
+  useEffect(() => {
+    onStatusChangeRef.current?.(status);
+  }, [status]);
 
   useEffect(() => {
     isUnmountedRef.current = false;

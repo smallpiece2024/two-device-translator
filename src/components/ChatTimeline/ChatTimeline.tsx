@@ -19,7 +19,12 @@ export interface ChatTimelineProps {
   messages: MessageView[];
   /** 自分の認識途中結果（表示専用）。未認識中は null */
   interim: string | null;
-  /** 自分の participantId（自分/相手の左右振り分けに使用） */
+  /**
+   * 自分の participantId。
+   * 自分/相手の左右振り分けは各メッセージの `isOwnMessage`（サーバー確定値）を
+   * 直接参照するため表示ロジックには使わないが、将来の拡張（自分の発言のみ
+   * ハイライトする等）に備えて呼び出し側の意図を明示する目的で受け取る。
+   */
   ownParticipantId: string;
 }
 
@@ -34,7 +39,8 @@ function formatTime(createdAt: string): string {
   return `${hours}:${minutes}`;
 }
 
-export function ChatTimeline({ messages, interim, ownParticipantId }: ChatTimelineProps) {
+export function ChatTimeline(props: ChatTimelineProps) {
+  const { messages, interim } = props;
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -54,7 +60,7 @@ export function ChatTimeline({ messages, interim, ownParticipantId }: ChatTimeli
       ) : (
         <ul className={styles.messageList}>
           {messages.map((message) => {
-            const isOwn = message.speakerParticipantId === ownParticipantId;
+            const isOwn = message.isOwnMessage;
             return (
               <li
                 key={message.messageId}
