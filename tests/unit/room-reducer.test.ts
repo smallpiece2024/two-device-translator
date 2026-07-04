@@ -170,4 +170,139 @@ describe("roomReducer", () => {
       createdAt: "2026-07-04T00:00:02.000Z",
     });
   });
+
+  /**
+   * 以下は Phase2/3 で実際に使用される予定のアクションのスモークテスト。
+   * RoomClient.tsx 側の dispatch はまだ実装されていないが、reducer 単体としての
+   * 実装漏れ・退行を検知するために追加する。
+   */
+  describe("Phase2/3 向けアクション（スモークテスト）", () => {
+    const participantA = {
+      participantId: "p1",
+      role: "owner" as const,
+      language: "ja-JP",
+      present: true,
+    };
+
+    const participantB = {
+      participantId: "p2",
+      role: "guest" as const,
+      language: "en-US",
+      present: true,
+    };
+
+    it("PARTICIPANT_JOINED で新規参加者を末尾に追加する", () => {
+      const withA = roomReducer(initialRoomState, {
+        type: "PARTICIPANT_JOINED",
+        participant: participantA,
+      });
+
+      const state = roomReducer(withA, {
+        type: "PARTICIPANT_JOINED",
+        participant: participantB,
+      });
+
+      expect(state.participants).toEqual([participantA, participantB]);
+    });
+
+    it("PARTICIPANT_JOINED で同一 participantId が既に存在する場合は置き換える", () => {
+      const withA = roomReducer(initialRoomState, {
+        type: "PARTICIPANT_JOINED",
+        participant: participantA,
+      });
+
+      const updatedA = { ...participantA, present: false };
+      const state = roomReducer(withA, {
+        type: "PARTICIPANT_JOINED",
+        participant: updatedA,
+      });
+
+      expect(state.participants).toEqual([updatedA]);
+    });
+
+    it("PARTICIPANT_LEFT で該当participantのpresentをfalseにする（一覧からは削除しない）", () => {
+      const withBoth = roomReducer(
+        roomReducer(initialRoomState, {
+          type: "PARTICIPANT_JOINED",
+          participant: participantA,
+        }),
+        { type: "PARTICIPANT_JOINED", participant: participantB },
+      );
+
+      const state = roomReducer(withBoth, {
+        type: "PARTICIPANT_LEFT",
+        participantId: "p2",
+      });
+
+      expect(state.participants).toHaveLength(2);
+      expect(state.participants.find((p) => p.participantId === "p2")?.present).toBe(
+        false,
+      );
+      expect(state.participants.find((p) => p.participantId === "p1")?.present).toBe(
+        true,
+      );
+    });
+
+    it("PARTICIPANT_LEFT で該当participantIdが存在しない場合は状態を変えない", () => {
+      const withA = roomReducer(initialRoomState, {
+        type: "PARTICIPANT_JOINED",
+        participant: participantA,
+      });
+
+      const state = roomReducer(withA, {
+        type: "PARTICIPANT_LEFT",
+        participantId: "unknown",
+      });
+
+      expect(state.participants).toEqual([participantA]);
+    });
+
+    it("PARTICIPANT_UPDATED で該当participantを新しい内容に置き換える", () => {
+      const withA = roomReducer(initialRoomState, {
+        type: "PARTICIPANT_JOINED",
+        participant: participantA,
+      });
+
+      const updatedA = { ...participantA, language: "en-US" };
+      const state = roomReducer(withA, {
+        type: "PARTICIPANT_UPDATED",
+        participant: updatedA,
+      });
+
+      expect(state.participants).toEqual([updatedA]);
+    });
+
+    it("IDLE_HINT で idleHint を true にする", () => {
+      const state = roomReducer(initialRoomState, { type: "IDLE_HINT" });
+      expect(state.idleHint).toBe(true);
+    });
+
+    it("TOPIC で topicSuggestion を設定する", () => {
+      const state = roomReducer(initialRoomState, {
+        type: "TOPIC",
+        suggestion: "最近見た映画の話",
+      });
+      expect(state.topicSuggestion).toBe("最近見た映画の話");
+    });
+
+    it("SUMMARY で summary を設定する", () => {
+      const state = roomReducer(initialRoomState, {
+        type: "SUMMARY",
+        summary: "会話の要約テキスト",
+      });
+      expect(state.summary).toBe("会話の要約テキスト");
+    });
+
+    it("ROOM_ENDED で roomEnded を true にする", () => {
+      const state = roomReducer(initialRoomState, { type: "ROOM_ENDED" });
+      expect(state.roomEnded).toBe(true);
+    });
+
+    it("未知のアクション（default分岐）では状態を変更しない", () => {
+      const state = roomReducer(initialRoomState, {
+        type: "UNKNOWN_ACTION",
+      } as unknown as Parameters<typeof roomReducer>[1]);
+      expect(state).toBe(initialRoomState);
+    });
+  });
 });
