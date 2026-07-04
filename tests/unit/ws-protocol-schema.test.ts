@@ -13,6 +13,9 @@ import {
   utteranceCommittedSchema,
   audioServerSchema,
   errorSchema,
+  updateSettingsSchema,
+  participantJoinedSchema,
+  participantLeftSchema,
 } from "../../shared/ws-protocol/schema";
 
 /**
@@ -24,7 +27,7 @@ import {
  */
 describe("ws-protocol schema", () => {
   describe("clientMessageSchema: 正常系", () => {
-    it("join メッセージ（仕様書例）をparseできる", () => {
+    it("join メッセージ（仕様書例）をparseできる（enableTts省略時は既定値trueが補完される）", () => {
       const input = {
         type: "join",
         roomId: "b1f2...",
@@ -34,7 +37,7 @@ describe("ws-protocol schema", () => {
         language: "ja-JP",
       };
       const result = clientMessageSchema.parse(input);
-      expect(result).toEqual(input);
+      expect(result).toEqual({ ...input, enableTts: true });
     });
 
     it("join メッセージは displayName 省略可", () => {
@@ -46,6 +49,32 @@ describe("ws-protocol schema", () => {
         language: "en-US",
       };
       expect(() => clientMessageSchema.parse(input)).not.toThrow();
+    });
+
+    it("join: enableTts を明示的に false にできる", () => {
+      const input = {
+        type: "join",
+        roomId: "b1f2...",
+        role: "guest",
+        token: "guest-jwt",
+        language: "en-US",
+        enableTts: false,
+      };
+      const result = clientMessageSchema.parse(input);
+      expect(result).toEqual(input);
+    });
+
+    it("join: enableTts を明示的に true にできる", () => {
+      const input = {
+        type: "join",
+        roomId: "b1f2...",
+        role: "guest",
+        token: "guest-jwt",
+        language: "en-US",
+        enableTts: true,
+      };
+      const result = clientMessageSchema.parse(input);
+      expect(result).toEqual(input);
     });
 
     it("start メッセージ（仕様書例）をparseできる", () => {
@@ -269,19 +298,26 @@ describe("ws-protocol schema", () => {
     });
   });
 
-  describe("clientMessageSchema: 異常系（type不正・未実装）", () => {
-    it("未知の type を拒否する", () => {
-      const input = { type: "unknown_type", foo: "bar" };
+  describe("update_settings メッセージ", () => {
+    it("update_settings（正しい形）をparseできる", () => {
+      const input = { type: "update_settings", enableTts: false };
+      expect(clientMessageSchema.parse(input)).toEqual(input);
+    });
+
+    it("update_settings: enableTts 欠落を拒否する", () => {
+      const input = { type: "update_settings" };
       expect(() => clientMessageSchema.parse(input)).toThrow();
     });
 
-    it("Phase2の update_settings（未実装）を拒否する", () => {
-      const input = {
-        type: "update_settings",
-        language: "en-US",
-        enableTts: false,
-        displayName: "Taro",
-      };
+    it("update_settings: enableTts が真偽値でない場合は拒否する", () => {
+      const input = { type: "update_settings", enableTts: "false" };
+      expect(() => clientMessageSchema.parse(input)).toThrow();
+    });
+  });
+
+  describe("clientMessageSchema: 異常系（type不正・未実装）", () => {
+    it("未知の type を拒否する", () => {
+      const input = { type: "unknown_type", foo: "bar" };
       expect(() => clientMessageSchema.parse(input)).toThrow();
     });
 
@@ -443,20 +479,6 @@ describe("ws-protocol schema", () => {
       expect(() => serverMessageSchema.parse(input)).toThrow();
     });
 
-    it("Phase2/3の participant_joined（未実装）を拒否する", () => {
-      const input = {
-        type: "participant_joined",
-        participant: {
-          participantId: "p_456",
-          role: "guest",
-          displayName: "John",
-          language: "en-US",
-          present: true,
-        },
-      };
-      expect(() => serverMessageSchema.parse(input)).toThrow();
-    });
-
     it("Phase3の summary（未実装）を拒否する", () => {
       const input = {
         type: "summary",
@@ -473,22 +495,75 @@ describe("ws-protocol schema", () => {
     });
   });
 
+  describe("participant_joined / participant_left メッセージ", () => {
+    it("participant_joined（正しい形）をparseできる", () => {
+      const input = {
+        type: "participant_joined",
+        participant: {
+          participantId: "p_456",
+          role: "guest",
+          displayName: "John",
+          language: "en-US",
+          present: true,
+        },
+      };
+      expect(serverMessageSchema.parse(input)).toEqual(input);
+    });
+
+    it("participant_joined: participant フィールド欠落を拒否する", () => {
+      const input = { type: "participant_joined" };
+      expect(() => serverMessageSchema.parse(input)).toThrow();
+    });
+
+    it("participant_joined: participant.role が不正な値の場合は拒否する", () => {
+      const input = {
+        type: "participant_joined",
+        participant: {
+          participantId: "p_456",
+          role: "admin",
+          displayName: "John",
+          language: "en-US",
+          present: true,
+        },
+      };
+      expect(() => serverMessageSchema.parse(input)).toThrow();
+    });
+
+    it("participant_left（正しい形）をparseできる", () => {
+      const input = { type: "participant_left", participantId: "p_456" };
+      expect(serverMessageSchema.parse(input)).toEqual(input);
+    });
+
+    it("participant_left: participantId 欠落を拒否する", () => {
+      const input = { type: "participant_left" };
+      expect(() => serverMessageSchema.parse(input)).toThrow();
+    });
+
+    it("participant_left: participantId が空文字列の場合は拒否する", () => {
+      const input = { type: "participant_left", participantId: "" };
+      expect(() => serverMessageSchema.parse(input)).toThrow();
+    });
+  });
+
   describe("個別スキーマのエクスポート", () => {
-    it("joinSchema, startSchema, audioClientSchema, commitSchema, stopSchema が個別にexportされている", () => {
+    it("joinSchema, updateSettingsSchema, startSchema, audioClientSchema, commitSchema, stopSchema が個別にexportされている", () => {
       expect(joinSchema).toBeDefined();
+      expect(updateSettingsSchema).toBeDefined();
       expect(startSchema).toBeDefined();
       expect(audioClientSchema).toBeDefined();
       expect(commitSchema).toBeDefined();
       expect(stopSchema).toBeDefined();
     });
 
-    it("joinedSchema, messageSchema, transcript系, audioServerSchema, errorSchema が個別にexportされている", () => {
+    it("joinedSchema, messageSchema, transcript系, audioServerSchema, participant系, errorSchema が個別にexportされている", () => {
       expect(joinedSchema).toBeDefined();
       expect(messageSchema).toBeDefined();
       expect(transcriptInterimSchema).toBeDefined();
       expect(transcriptFinalSchema).toBeDefined();
       expect(utteranceCommittedSchema).toBeDefined();
       expect(audioServerSchema).toBeDefined();
+      expect(participantJoinedSchema).toBeDefined();
+      expect(participantLeftSchema).toBeDefined();
       expect(errorSchema).toBeDefined();
     });
   });

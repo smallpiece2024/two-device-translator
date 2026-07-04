@@ -47,10 +47,11 @@
 | client → server | `audio` | 音声チャンク送信 | 1 |
 | client → server | `commit` | 手動の発話区切り | 1 |
 | client → server | `stop` | 録音セッション停止 | 1 |
-| client → server | `update_settings` | 言語 / TTS / 表示名の変更通知 | 2 |
+| client → server | `update_settings` | TTS の変更通知（Phase1 は enableTts のみ。言語/表示名は Phase2）（bd-124.3 で前倒し） | 1 |
 | client → server | `request_end` | オーナーによるルーム終了要求 | 2/3 |
 | server → client | `joined` | 参加確定（自分の participantId・ルーム状態・参加者一覧） | 1 |
-| server → client | `participant_joined` / `participant_left` / `participant_updated` | 参加者イベント | 2 |
+| server → client | `participant_joined` / `participant_left` | 参加者の入退室イベント（bd-124.3 で前倒し。在室中の他参加者へ配信） | 1 |
+| server → client | `participant_updated` | 参加者の設定変更イベント | 2 |
 | server → client | `transcript_interim` | 認識途中結果（話者本人にのみ・表示専用） | 1 |
 | server → client | `transcript_final` | 認識確定結果（話者本人にのみ） | 1 |
 | server → client | `utterance_committed` | 発話区切り確定（話者本人にのみ） | 1 |
@@ -87,6 +88,7 @@
 | `token` | `string` | ○ | owner=Supabaseアクセストークン、guest=ゲストJWT |
 | `displayName` | `string` | △ | 表示名（未設定可、FR-5.1） |
 | `language` | `LanguageEnum` | ○ | 自分の話す言語の初期値（owner=個人設定、guest=en-US、FR-4.2） |
+| `enableTts` | `boolean` | △ | 聞き手としてTTS音声を受け取るかの初期値（省略時 `true`）。以後の変更は `update_settings`（bd-124.3 で追加） |
 
 サーバーは token を検証し、`roomId` と `participantId` の整合を確認して `joined` を返す（[server-design.md](./server-design.md#接続時認証verifyparticipant) 参照）。
 
@@ -132,10 +134,13 @@ MediaRecorder の Blob を base64 化（WebM/Opus 48kHz）。STTストリーム�
 ### `update_settings`（設定変更）
 
 ```json
+// Phase1（bd-124.3 で前倒し実装）: enableTts のみ
+{ "type": "update_settings", "enableTts": false }
+// Phase2 拡張形: 言語・表示名も変更可能にし、他参加者へ participant_updated を配信する
 { "type": "update_settings", "language": "en-US", "enableTts": false, "displayName": "Taro" }
 ```
 
-言語・TTS・表示名の変更をサーバーへ通知する。サーバーは参加者状態を更新し、他参加者へ `participant_updated` を配信する。録音中の言語変更は次の `start` から反映（MVP。プロトタイプ方針を継承）。
+設定変更をサーバーへ通知する。**Phase1 では `enableTts` のみ**（聞き手としてTTS音声を受け取るか。サーバーはセッションの enableTts を更新し、以後の `audio` 配信に反映。応答・配信なし）。Phase2 で言語・表示名に拡張し、`participant_updated` を配信する。録音中の言語変更は次の `start` から反映（MVP。プロトタイプ方針を継承）。
 
 ### `request_end`（ルーム終了）
 
@@ -170,11 +175,11 @@ MediaRecorder の Blob を base64 化（WebM/Opus 48kHz）。STTストリーム�
 
 ```json
 { "type": "participant_joined", "participant": { "participantId": "p_456", "role": "guest", "displayName": "John", "language": "en-US", "present": true } }
-{ "type": "participant_left", "participantId": "p_456", "reason": "disconnected" }
+{ "type": "participant_left", "participantId": "p_456" }
 { "type": "participant_updated", "participantId": "p_456", "displayName": "John", "language": "en-US" }
 ```
 
-`participant_left.reason` は `"disconnected"`（一時断）/ `"ended"`（終了）。一時断と終了の区別は [server-design.md](./server-design.md#不在終了判定) を参照。
+`participant_joined` / `participant_left` は **Phase1 実装済み**（bd-124.3 で前倒し。join成功時・切断時に在室中の他参加者へ配信。UIの参加者数表示は present な参加者のみカウントする）。`participant_left.reason`（`"disconnected"`（一時断）/ `"ended"`（終了）の区別）と `participant_updated` は Phase2（一時断と終了の区別は [server-design.md](./server-design.md#不在終了判定) を参照）。
 
 ### `transcript_interim` / `transcript_final` / `utterance_committed`（話者本人にのみ）
 
