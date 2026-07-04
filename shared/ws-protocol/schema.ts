@@ -28,6 +28,14 @@ export const joinSchema = z.object({
   token: z.string().min(1),
   displayName: z.string().max(50).optional(),
   language: LanguageEnum,
+  /** 聞き手として TTS を受け取るか（既定 true） */
+  enableTts: z.boolean().optional().default(true),
+});
+
+/** TTS等の設定更新（将来 language/displayName 等の項目追加を見込む） */
+export const updateSettingsSchema = z.object({
+  type: z.literal("update_settings"),
+  enableTts: z.boolean(),
 });
 
 /** 録音セッション開始 */
@@ -60,6 +68,7 @@ export const stopSchema = z.object({
 
 export const clientMessageSchema = z.discriminatedUnion("type", [
   joinSchema,
+  updateSettingsSchema,
   startSchema,
   audioClientSchema,
   commitSchema,
@@ -145,6 +154,18 @@ export const audioServerSchema = z.object({
   data: z.string().min(1),
 });
 
+/** 他参加者の join 通知（join成功時、既に在室している参加者へ配信） */
+export const participantJoinedSchema = z.object({
+  type: z.literal("participant_joined"),
+  participant: participantSummarySchema,
+});
+
+/** 他参加者の退室通知（切断時、在室中の参加者へ配信） */
+export const participantLeftSchema = z.object({
+  type: z.literal("participant_left"),
+  participantId: z.string().min(1),
+});
+
 /** エラー通知。`fatal:true` の場合は接続終了 */
 export const errorSchema = z.object({
   type: z.literal("error"),
@@ -159,5 +180,7 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
   utteranceCommittedSchema,
   messageSchema,
   audioServerSchema,
+  participantJoinedSchema,
+  participantLeftSchema,
   errorSchema,
 ]);

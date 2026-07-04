@@ -6,6 +6,7 @@
 import type { z } from "zod";
 import type {
   joinSchema,
+  updateSettingsSchema,
   startSchema,
   audioClientSchema,
   commitSchema,
@@ -19,12 +20,15 @@ import type {
   utteranceCommittedSchema,
   messageSchema,
   audioServerSchema,
+  participantJoinedSchema,
+  participantLeftSchema,
   errorSchema,
   serverMessageSchema,
 } from "./schema";
 
 // client → server
 export type JoinMessage = z.infer<typeof joinSchema>;
+export type UpdateSettingsMessage = z.infer<typeof updateSettingsSchema>;
 export type StartMessage = z.infer<typeof startSchema>;
 export type AudioClientMessage = z.infer<typeof audioClientSchema>;
 export type CommitMessage = z.infer<typeof commitSchema>;
@@ -43,5 +47,7 @@ export type UtteranceCommittedMessage = z.infer<
 >;
 export type MessageMessage = z.infer<typeof messageSchema>;
 export type AudioServerMessage = z.infer<typeof audioServerSchema>;
+export type ParticipantJoinedMessage = z.infer<typeof participantJoinedSchema>;
+export type ParticipantLeftMessage = z.infer<typeof participantLeftSchema>;
 export type ErrorMessage = z.infer<typeof errorSchema>;
 export type ServerMessage = z.infer<typeof serverMessageSchema>;

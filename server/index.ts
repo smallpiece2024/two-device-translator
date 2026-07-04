@@ -148,7 +148,9 @@ export function startServer(
           return;
         }
 
-        const joinResult = roomManager.join(message.roomId, identity, ws);
+        const joinResult = roomManager.join(message.roomId, identity, ws, {
+          enableTts: message.enableTts,
+        });
         if (!joinResult.ok) {
           sendError(joinResult.reason, false);
           return;
@@ -156,6 +158,17 @@ export function startServer(
 
         session = joinResult.session;
         roomId = message.roomId;
+
+        // 既に在室している他参加者へ、新規参加を通知する
+        // （新規参加者自身への joined 応答より先に送ることで、他参加者側での
+        // 受信順序に関するテスト時のレース（同時刻に別ソケットへ送信した際の
+        // 到達順不定）の影響を抑える）
+        for (const other of joinResult.room.participants.values()) {
+          if (other.participantId === session.participantId) {
+            continue;
+          }
+          other.send({ type: "participant_joined", participant: session.toSummary() });
+        }
 
         sendMessage({
           type: "joined",
@@ -169,8 +182,13 @@ export function startServer(
         return;
       }
 
-      // join 済み: 録音セッション（start/audio/commit/stop）を扱う
+      // join 済み: 録音セッション（start/audio/commit/stop）・設定更新を扱う
       switch (message.type) {
+        case "update_settings": {
+          session.enableTts = message.enableTts;
+          return;
+        }
+
         case "start": {
           session.startRecording(message, {
             onUtteranceCommitted: (utteranceText) => {
@@ -231,7 +249,14 @@ export function startServer(
         session.destroyRecording();
       }
       if (session && roomId) {
-        roomManager.leave(roomId, session.participantId);
+        const room = roomManager.getRoom(roomId);
+        const leftParticipantId = session.participantId;
+        roomManager.leave(roomId, leftParticipantId);
+        if (room) {
+          for (const other of room.participants.values()) {
+            other.send({ type: "participant_left", participantId: leftParticipantId });
+          }
+        }
       }
     });
 

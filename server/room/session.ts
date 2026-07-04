@@ -45,7 +45,7 @@ export interface ParticipantIdentity {
 
 /** `Session` 生成時の追加オプション */
 export interface SessionOptions {
-  /** 聞き手として TTS を受け取るか（既定 false） */
+  /** 聞き手として TTS を受け取るか（既定 true。通常は join 由来で明示的に渡される） */
   enableTts?: boolean;
 }
 
@@ -89,7 +89,7 @@ export class Session {
     this.role = identity.role;
     this.displayName = identity.displayName;
     this.language = identity.language;
-    this.enableTts = options.enableTts ?? false;
+    this.enableTts = options.enableTts ?? true;
     this.present = true;
     this.ws = ws;
   }
