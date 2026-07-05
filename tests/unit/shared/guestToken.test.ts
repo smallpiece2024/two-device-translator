@@ -48,6 +48,46 @@ afterEach(() => {
 
 const VALID_PAYLOAD = { roomId: "room-1", participantId: "participant-1" };
 
+/**
+ * base64url文字列（パディング無し）をBufferにデコードする。
+ */
+function base64UrlToBuffer(input: string): Buffer {
+  const padded = input + "=".repeat((4 - (input.length % 4)) % 4);
+  const base64 = padded.replace(/-/g, "+").replace(/_/g, "/");
+  return Buffer.from(base64, "base64");
+}
+
+/**
+ * Bufferをbase64url文字列（パディング無し）にエンコードする。
+ */
+function bufferToBase64Url(buf: Buffer): string {
+  return buf.toString("base64").replace(/=+$/, "").replace(/\+/g, "-").replace(/\//g, "_");
+}
+
+/**
+ * base64url文字列の先頭バイトをビット反転（XOR 0xFF）して再エンコードする。
+ *
+ * 末尾1文字だけを別の文字に置換する方式は、base64が3バイト単位でエンコード
+ * されるため flaky になり得る: 署名バイト長が3の倍数でない場合、最終文字は
+ * 「パディング用の余剰ビット」を含み、そのビットのみを変化させても
+ * デコード結果（実バイト列）が変わらないことがある
+ * （例: 32バイトのHMAC-SHA256署名は 10*3+2 バイトで、最終グループの
+ * 3文字目は下位2bitが常に0のパディングとしてデコード時に切り捨てられる。
+ * そのビットだけをトグルする置換では改ざんが成立せず、偶発的に
+ * verify が成功してテストが落ちていた）。
+ * 先頭バイトへの操作であれば常に実データビットに対応するため、
+ * バイト長や剰余に関わらず決定的にデコード結果を変える。
+ */
+function tamperFirstByte(base64UrlSignature: string): string {
+  const bytes = base64UrlToBuffer(base64UrlSignature);
+  if (bytes.length === 0) {
+    return "tampered";
+  }
+  const tampered = Buffer.from(bytes);
+  tampered[0] = tampered[0] ^ 0xff;
+  return bufferToBase64Url(tampered);
+}
+
 // ---------------------------------------------------------------------------
 // 定数
 // ---------------------------------------------------------------------------
@@ -130,11 +170,10 @@ describe("verifyGuestToken — 改ざん検知", () => {
   it("署名部分を書き換えたトークンはnullになる", async () => {
     const token = await signGuestToken(VALID_PAYLOAD);
     const parts = token.split(".");
-    // 署名部分（3番目）を別の文字列に差し替え、末尾1文字も反転してみて確実に不一致にする
-    const tamperedSignature =
-      parts[2].length > 0
-        ? parts[2].slice(0, -1) + (parts[2].slice(-1) === "A" ? "B" : "A")
-        : "tampered";
+    // 署名部分（3番目）の生バイト列の先頭バイトをビット反転して再エンコードし、
+    // 常にデコード後のバイト列が変わる（=確実に検証が失敗する）ようにする
+    // （詳細は tamperFirstByte のコメントを参照）。
+    const tamperedSignature = tamperFirstByte(parts[2]);
     const tampered = `${parts[0]}.${parts[1]}.${tamperedSignature}`;
 
     const result = await verifyGuestToken(tampered);

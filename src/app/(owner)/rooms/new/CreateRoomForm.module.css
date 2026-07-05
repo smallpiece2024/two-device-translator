@@ -1,0 +1,86 @@
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 1.5rem;
+  border: 1px solid #d9d9e0;
+  border-radius: 0.5rem;
+  background-color: #ffffff;
+}
+
+.description {
+  font-size: 0.95rem;
+  color: #333;
+}
+
+.error {
+  font-size: 0.85rem;
+  color: #c0392b;
+  border: 1px solid #c0392b;
+  border-radius: 0.25rem;
+  padding: 0.5rem 0.625rem;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+}
+
+.cancelLink {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0.5rem 1rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #1c1c20;
+  background-color: #ffffff;
+  border: 1px solid #d9d9e0;
+  border-radius: 0.25rem;
+  text-decoration: none;
+}
+
+.cancelLink:hover {
+  background-color: #f4f4f6;
+}
+
+.cancelLink:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.submitButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0.5rem 1rem;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #fff;
+  background-color: #2563eb;
+  border: 1px solid #2563eb;
+  border-radius: 0.25rem;
+  cursor: pointer;
+}
+
+.submitButton:hover {
+  background-color: #1d4ed8;
+  border-color: #1d4ed8;
+}
+
+.submitButton:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.submitButton:disabled {
+  background-color: #a8bceb;
+  border-color: #a8bceb;
+  cursor: not-allowed;
+}
