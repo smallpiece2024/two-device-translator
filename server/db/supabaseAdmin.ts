@@ -63,3 +63,33 @@ export function setSupabaseAdminClient(client: SupabaseClient): void {
 export function resetSupabaseAdminClient(): void {
   _supabaseAdminClient = null;
 }
+
+/**
+ * ルーム終了時に `rooms.status`/`ended_at` を更新する（bd-e3p）。
+ * `server/room/roomManager.ts` の `endRoom`（オーナーの `request_end` /
+ * 不在自動終了の両方）から fire-and-forget で呼ばれる想定
+ * （docs/design/server-design.md「ルーム終了シーケンス」参照）。
+ *
+ * 会話中の配信を遅延させない（NFR-2.2 と同じ方針）ため、失敗しても
+ * 例外を投げない（ログ出力のみ）。`SUPABASE_URL`/`SUPABASE_SERVICE_KEY`
+ * が未設定の環境（AUTH_MODE=insecure での開発・E2E 等）でも WS サーバー
+ * 本体の終了処理を止めないよう、クライアント取得自体の失敗も捕捉する。
+ */
+export async function markRoomEnded(roomId: string): Promise<void> {
+  try {
+    const supabase = getSupabaseAdminClient();
+    const { error } = await supabase
+      .from("rooms")
+      .update({ status: "ended", ended_at: new Date().toISOString() })
+      .eq("id", roomId);
+
+    if (error) {
+      console.error("[supabaseAdmin] failed to mark room ended:", error.message);
+    }
+  } catch (err) {
+    console.error(
+      "[supabaseAdmin] markRoomEnded unexpected error:",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}

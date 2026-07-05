@@ -11,6 +11,7 @@ import type {
   audioClientSchema,
   commitSchema,
   stopSchema,
+  requestEndSchema,
   clientMessageSchema,
   participantSummarySchema,
   joinedSchema,
@@ -21,8 +22,11 @@ import type {
   messageSchema,
   audioServerSchema,
   participantJoinedSchema,
+  participantLeftReasonSchema,
   participantLeftSchema,
   errorSchema,
+  roomEndedReasonSchema,
+  roomEndedSchema,
   serverMessageSchema,
 } from "./schema";
 
@@ -33,6 +37,8 @@ export type StartMessage = z.infer<typeof startSchema>;
 export type AudioClientMessage = z.infer<typeof audioClientSchema>;
 export type CommitMessage = z.infer<typeof commitSchema>;
 export type StopMessage = z.infer<typeof stopSchema>;
+/** オーナーによるルーム終了要求（bd-e3p） */
+export type RequestEndMessage = z.infer<typeof requestEndSchema>;
 export type ClientMessage = z.infer<typeof clientMessageSchema>;
 
 // server → client
@@ -48,6 +54,11 @@ export type UtteranceCommittedMessage = z.infer<
 export type MessageMessage = z.infer<typeof messageSchema>;
 export type AudioServerMessage = z.infer<typeof audioServerSchema>;
 export type ParticipantJoinedMessage = z.infer<typeof participantJoinedSchema>;
+/** 退室理由（bd-e3p）。`"disconnected"` | `"ended"` */
+export type ParticipantLeftReason = z.infer<typeof participantLeftReasonSchema>;
 export type ParticipantLeftMessage = z.infer<typeof participantLeftSchema>;
 export type ErrorMessage = z.infer<typeof errorSchema>;
+/** ルーム終了理由（bd-e3p）。`"owner_ended"` | `"auto_timeout"` */
+export type RoomEndedReason = z.infer<typeof roomEndedReasonSchema>;
+export type RoomEndedMessage = z.infer<typeof roomEndedSchema>;
 export type ServerMessage = z.infer<typeof serverMessageSchema>;

@@ -110,6 +110,7 @@ module.exports = {
 | `GCP_MODE` | ws | 不可 | **E2Eテスト専用**。`mock` で STT/翻訳/TTS を決定的モック（`server/gcp/mockGcp.ts`）に切替。**本番・開発の通常運用では設定禁止**（未設定＝実GCP。誤設定検出のため mock 時は起動ログに明示される）（bd-713 で追加） |
 | `AUTH_MODE` | ws | 不可 | **E2E・開発専用**。`insecure` で WS接続時のtoken検証をスキップ（Phase1互換）。**本番では設定禁止**（未設定＝strict＝本検証。有効時は起動ログに警告）（bd-0jy で追加） |
 | `APP_BASE_URL` | web | 不可 | 招待URL等の組み立てに使う公開ベースURL（例 `https://{domain}`）。**本番では必須**（未設定時は Host ヘッダにフォールバックするが、Host Headerポイズニング防御のため本番はフォールバックさせない）（bd-jny で追加） |
+| `AUTO_END_THRESHOLD_MS` | ws | 不可 | 在室1人以下が継続したら自動終了するまでのミリ秒（既定 600000=10分）（bd-e3p で追加） |
 | `SUPABASE_URL` | web/ws | 不可 | Supabase プロジェクトURL |
 | `SUPABASE_SERVICE_KEY` | ws / 一部 Route Handler | **不可** | service_role キー（[supabase-design.md](./supabase-design.md#service_role-の使用箇所) 参照） |
 | `NEXT_PUBLIC_SUPABASE_URL` | web | 可 | ブラウザ用 Supabase URL |

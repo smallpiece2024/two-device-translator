@@ -10,6 +10,10 @@
 import { WebSocketServer } from "ws";
 import WebSocket from "ws";
 import { startServer } from "../../server/index";
+import {
+  setSupabaseAdminClient,
+  resetSupabaseAdminClient,
+} from "../../server/db/supabaseAdmin";
 import type { JoinMessage, ServerMessage } from "@shared/index";
 
 describe("WS server - room join (RoomManager結合テスト)", () => {
@@ -95,6 +99,21 @@ describe("WS server - room join (RoomManager結合テスト)", () => {
       ...overrides,
     };
   }
+
+  /**
+   * 自動終了テストが finalizeRoomEnd → markRoomEnded を経由するため、
+   * 実Supabase接続を避けるモックを注入する。
+   */
+  beforeEach(() => {
+    const eq = jest.fn().mockResolvedValue({ error: null });
+    const update = jest.fn().mockReturnValue({ eq });
+    const from = jest.fn().mockReturnValue({ update });
+    setSupabaseAdminClient({ from } as never);
+  });
+
+  afterEach(() => {
+    resetSupabaseAdminClient();
+  });
 
   beforeEach(async () => {
     wss = startServer(0, HOST);
@@ -204,39 +223,61 @@ describe("WS server - room join (RoomManager結合テスト)", () => {
     expect(client2.readyState).toBe(WebSocket.OPEN);
   });
 
-  it("close時にleaveされ、参加者が0になるとルームが破棄される（再joinで参加者数がリセットされることで確認）", async () => {
-    const port = getPort(wss);
-    const roomId = `room-destroy-${Date.now()}`;
+  it(
+    "close時はleaveされるのみでルームは即座に破棄されない。全員不在の状態が" +
+      "autoEndThresholdMs継続すると自動終了し、以降の同一roomIdへのjoinは" +
+      "errorではなくroom_ended(reason:auto_timeout)を受信した後に接続がcloseされる" +
+      "（bd-e3p、must-fix1: leaveだけでは破棄されず、自動終了タイマー経由でendedになる仕様に変更）",
+    async () => {
+      // このテストのみ、しきい値を短く注入して自動終了を検証する
+      // （固定sleepではなく、しきい値+十分な余裕を持たせた1回の待機で検証する）。
+      wss.clients.forEach((client) => client.terminate());
+      wss.close();
+      await new Promise<void>((resolve) => wss.once("close", resolve));
+      wss = startServer(0, HOST, { autoEndThresholdMs: 100 });
+      await new Promise<void>((resolve) => wss.once("listening", resolve));
 
-    const client1 = connect(port);
-    await waitForOpen(client1);
-    const joined1Promise = waitForMessage(client1);
-    client1.send(JSON.stringify(makeJoin(roomId, "owner")));
-    await joined1Promise;
+      const port = getPort(wss);
+      const roomId = `room-autoend-${Date.now()}`;
 
-    const client2 = connect(port);
-    await waitForOpen(client2);
-    const joined2Promise = waitForMessage(client2);
-    client2.send(JSON.stringify(makeJoin(roomId, "guest")));
-    await joined2Promise;
+      const client1 = connect(port);
+      await waitForOpen(client1);
+      const joined1Promise = waitForMessage(client1);
+      client1.send(JSON.stringify(makeJoin(roomId, "owner")));
+      await joined1Promise;
 
-    // 両クライアントをcloseし、サーバー側のleave処理（close イベント）完了を待つ
-    const close1 = waitForClose(client1);
-    const close2 = waitForClose(client2);
-    client1.close();
-    client2.close();
-    await Promise.all([close1, close2]);
+      const client2 = connect(port);
+      await waitForOpen(client2);
+      const joined2Promise = waitForMessage(client2);
+      client2.send(JSON.stringify(makeJoin(roomId, "guest")));
+      await joined2Promise;
 
-    // 新しいクライアントで同一roomIdへjoinし、ルームが破棄され新規作成されたことを
-    // 参加者数（1人のみ）から確認する。旧セッションが残っていれば参加者は2人以上になる。
-    const client3 = connect(port);
-    await waitForOpen(client3);
-    const joined3Promise = waitForMessage(client3);
-    client3.send(JSON.stringify(makeJoin(roomId, "owner")));
-    const joined3 = (await joined3Promise) as Extract<ServerMessage, { type: "joined" }>;
+      // 両クライアントをcloseし、サーバー側のleave処理（close イベント）完了を待つ
+      const close1 = waitForClose(client1);
+      const close2 = waitForClose(client2);
+      client1.close();
+      client2.close();
+      await Promise.all([close1, close2]);
 
-    expect(joined3.type).toBe("joined");
-    expect(joined3.participants).toHaveLength(1);
-    expect(joined3.participants[0].participantId).toBe(joined3.participantId);
-  });
+      // autoEndThresholdMs(100ms)より十分長く待ち、自動終了タイマーの発火を確実にする
+      await new Promise((resolve) => setTimeout(resolve, 400));
+
+      const client3 = connect(port);
+      await waitForOpen(client3);
+      const roomEndedPromise = waitForMessage(client3);
+      const closePromise = new Promise<number>((resolve) => {
+        client3.once("close", (code: number) => resolve(code));
+      });
+      client3.send(JSON.stringify(makeJoin(roomId, "owner")));
+      const roomEnded = (await roomEndedPromise) as Extract<
+        ServerMessage,
+        { type: "room_ended" }
+      >;
+
+      expect(roomEnded).toEqual({ type: "room_ended", reason: "auto_timeout" });
+
+      const closeCode = await closePromise;
+      expect(closeCode).toBe(1000);
+    },
+  );
 });

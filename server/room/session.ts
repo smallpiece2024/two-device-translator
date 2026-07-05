@@ -80,7 +80,7 @@ export class Session {
   enableTts: boolean;
   present: boolean;
 
-  private readonly ws: WebSocket;
+  private ws: WebSocket;
   private utteranceBuffer: UtteranceBufferManager | null = null;
   private sttHandle: SpeechStreamHandle | null = null;
 
@@ -103,6 +103,51 @@ export class Session {
       return;
     }
     this.ws.send(JSON.stringify(message));
+  }
+
+  /**
+   * 再接続時、このセッションが表す接続を新しいソケットへ差し替える
+   * （bd-e3p: 同一 participantId での再接続復帰）。`present` を `true` に戻し、
+   * 差し替え前のソケットを返す（呼び出し側はまだ開いていれば閉じる判断に使う。
+   * 「二重接続時は新しい接続を正とする」設計判断、docs/design/server-design.md
+   * 「再接続・不在・終了判定」参照）。
+   *
+   * 差し替え前に録音セッション（STTストリーム・発話バッファ）があれば
+   * 破棄する（コードレビュー指摘 should-fix2）。旧ソケットに紐づく録音は
+   * 新しい接続からは制御できず、放置すると孤立した STT ストリームとして
+   * 課金・リソースリークの原因になる。再接続後に録音を続けたい場合、
+   * クライアントは改めて `start` を送る想定（プロトタイプ通り、録音は
+   * 接続ではなくセッション単位の明示操作）。
+   */
+  attachSocket(ws: WebSocket): WebSocket {
+    if (this.isRecording) {
+      this.destroyRecording();
+    }
+
+    const previous = this.ws;
+    this.ws = ws;
+    this.present = true;
+    return previous;
+  }
+
+  /**
+   * 渡された `ws` が現在このセッションの現役ソケットかどうかを返す。
+   * 再接続で差し替えられた「古い」物理接続の close イベントが後から発火した際、
+   * 誤って新しい接続の状態（present・録音セッション）を壊さないためのガードに使う
+   * （`server/index.ts` の close ハンドラ参照）。
+   */
+  isCurrentSocket(ws: WebSocket): boolean {
+    return this.ws === ws;
+  }
+
+  /**
+   * このセッションの現在のソケットを閉じる（開いている場合のみ）。
+   * ルーム終了時（`request_end` / 自動終了）に全参加者の接続を終了するために使う。
+   */
+  closeSocket(code?: number, reason?: string): void {
+    if (this.ws.readyState === this.ws.OPEN) {
+      this.ws.close(code, reason);
+    }
   }
 
   /** `joined.participants` 等に載せるための要約情報へ変換する */

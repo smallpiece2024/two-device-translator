@@ -1,7 +1,8 @@
 /**
- * server/auth/verifyParticipant.ts の単体テスト（bd-0jy）。
+ * server/auth/verifyParticipant.ts の単体テスト（bd-0jy、bd-e3p でowner安定ID化を追加）。
  *
- * - owner: supabaseAdmin.auth.getUser + rooms.owner_user_id 照合
+ * - owner: supabaseAdmin.auth.getUser + rooms.owner_user_id 照合 +
+ *   participants(room_id/user_id/role='owner') による安定ID解決（bd-e3p）
  * - guest: verifyGuestToken + payload.roomId 照合
  * - AUTH_MODE=insecure: 常に成功するダミー検証
  *
@@ -22,13 +23,15 @@ import type { JoinMessage } from "../../shared/index";
 /**
  * supabaseAdmin モッククライアントを構築する。
  * `auth.getUser(token)` と `from("rooms").select().eq().single()`、
- * `from("participants").select().eq().eq().eq().maybeSingle()` の
+ * `from("participants").select().eq().eq().eq().maybeSingle()`、
+ * `from("participants").insert().select().single()`（bd-e3p、owner安定ID発行用）の
  * チェーンをモックする（テーブル名に応じて分岐する）。
  */
 function makeMockSupabaseClient(options: {
   getUserResult?: { data: { user: { id: string } | null }; error: { message: string } | null };
   roomResult?: { data: { owner_user_id: string } | null; error: { message: string } | null };
   participantResult?: { data: { id: string } | null; error: { message: string } | null };
+  participantInsertResult?: { data: { id: string } | null; error: { message: string } | null };
 }) {
   const getUserResult = options.getUserResult ?? {
     data: { user: null },
@@ -42,22 +45,31 @@ function makeMockSupabaseClient(options: {
     data: { id: "guest-xyz" },
     error: null,
   };
+  const participantInsertResult = options.participantInsertResult ?? {
+    data: { id: "inserted-id" },
+    error: null,
+  };
 
   // rooms チェーン: from("rooms").select().eq().single()
   const roomsSingle = jest.fn().mockResolvedValue(roomResult);
   const roomsEq = jest.fn().mockReturnValue({ single: roomsSingle });
   const roomsSelect = jest.fn().mockReturnValue({ eq: roomsEq });
 
-  // participants チェーン: from("participants").select().eq().eq().eq().maybeSingle()
+  // participants select チェーン: from("participants").select().eq().eq().eq().maybeSingle()
   const participantsMaybeSingle = jest.fn().mockResolvedValue(participantResult);
   const participantsEq3 = jest.fn().mockReturnValue({ maybeSingle: participantsMaybeSingle });
   const participantsEq2 = jest.fn().mockReturnValue({ eq: participantsEq3 });
   const participantsEq1 = jest.fn().mockReturnValue({ eq: participantsEq2 });
   const participantsSelect = jest.fn().mockReturnValue({ eq: participantsEq1 });
 
+  // participants insert チェーン: from("participants").insert(obj).select("id").single()
+  const participantsInsertSingle = jest.fn().mockResolvedValue(participantInsertResult);
+  const participantsInsertSelect = jest.fn().mockReturnValue({ single: participantsInsertSingle });
+  const participantsInsert = jest.fn().mockReturnValue({ select: participantsInsertSelect });
+
   const from = jest.fn((table: string) => {
     if (table === "participants") {
-      return { select: participantsSelect };
+      return { select: participantsSelect, insert: participantsInsert };
     }
     return { select: roomsSelect };
   });
@@ -75,6 +87,9 @@ function makeMockSupabaseClient(options: {
     participantsEq2,
     participantsEq3,
     participantsMaybeSingle,
+    participantsInsert,
+    participantsInsertSelect,
+    participantsInsertSingle,
   };
 }
 
@@ -122,6 +137,7 @@ describe("verifyParticipant", () => {
       const mock = makeMockSupabaseClient({
         getUserResult: { data: { user: { id: "user-abc" } }, error: null },
         roomResult: { data: { owner_user_id: "user-abc" }, error: null },
+        participantResult: { data: { id: "owner-p-1" }, error: null },
       });
       setSupabaseAdminClient(mock.client);
 
@@ -196,6 +212,199 @@ describe("verifyParticipant", () => {
       const identity = await verifyJoin(makeJoin({ role: "owner" }));
 
       expect(identity).toBeNull();
+    });
+
+    // -----------------------------------------------------------------------
+    // owner安定ID化（bd-e3p、resolveOwnerParticipantId）
+    // -----------------------------------------------------------------------
+    describe("owner安定ID化（bd-e3p）", () => {
+      test("participantsに既存行がある場合、その id が participantId として使われ、insertは呼ばれない", async () => {
+        const mock = makeMockSupabaseClient({
+          getUserResult: { data: { user: { id: "user-abc" } }, error: null },
+          roomResult: { data: { owner_user_id: "user-abc" }, error: null },
+          participantResult: { data: { id: "existing-owner-participant-id" }, error: null },
+        });
+        setSupabaseAdminClient(mock.client);
+
+        const identity = await verifyJoin(
+          makeJoin({ role: "owner", roomId: "room-1", displayName: "Owner太郎" }),
+        );
+
+        expect(identity).not.toBeNull();
+        expect(identity!.participantId).toBe("existing-owner-participant-id");
+        expect(mock.participantsEq1).toHaveBeenCalledWith("room_id", "room-1");
+        expect(mock.participantsEq2).toHaveBeenCalledWith("user_id", "user-abc");
+        expect(mock.participantsEq3).toHaveBeenCalledWith("role", "owner");
+        expect(mock.participantsInsert).not.toHaveBeenCalled();
+      });
+
+      test("participantsに既存行が無い場合、insertされ新しいidがparticipantIdとして使われる", async () => {
+        const mock = makeMockSupabaseClient({
+          getUserResult: { data: { user: { id: "user-abc" } }, error: null },
+          roomResult: { data: { owner_user_id: "user-abc" }, error: null },
+          participantResult: { data: null, error: null },
+          participantInsertResult: { data: { id: "new-owner-participant-id" }, error: null },
+        });
+        setSupabaseAdminClient(mock.client);
+
+        const identity = await verifyJoin(
+          makeJoin({
+            role: "owner",
+            roomId: "room-1",
+            displayName: "Owner太郎",
+            language: "ja-JP",
+            enableTts: true,
+          }),
+        );
+
+        expect(identity).not.toBeNull();
+        expect(identity!.participantId).toBe("new-owner-participant-id");
+        expect(mock.participantsInsert).toHaveBeenCalledWith({
+          room_id: "room-1",
+          role: "owner",
+          user_id: "user-abc",
+          display_name: "Owner太郎",
+          language: "ja-JP",
+          tts_enabled: true,
+        });
+        expect(mock.participantsInsertSelect).toHaveBeenCalledWith("id");
+      });
+
+      test("displayName省略時、insertのdisplay_nameはnullになる", async () => {
+        const mock = makeMockSupabaseClient({
+          getUserResult: { data: { user: { id: "user-abc" } }, error: null },
+          roomResult: { data: { owner_user_id: "user-abc" }, error: null },
+          participantResult: { data: null, error: null },
+          participantInsertResult: { data: { id: "new-owner-participant-id" }, error: null },
+        });
+        setSupabaseAdminClient(mock.client);
+
+        await verifyJoin(makeJoin({ role: "owner", roomId: "room-1", displayName: undefined }));
+
+        expect(mock.participantsInsert).toHaveBeenCalledWith(
+          expect.objectContaining({ display_name: null }),
+        );
+      });
+
+      test("insertがerrorを返す → null（fail-closed）", async () => {
+        const mock = makeMockSupabaseClient({
+          getUserResult: { data: { user: { id: "user-abc" } }, error: null },
+          roomResult: { data: { owner_user_id: "user-abc" }, error: null },
+          participantResult: { data: null, error: null },
+          participantInsertResult: { data: null, error: { message: "insert failed" } },
+        });
+        setSupabaseAdminClient(mock.client);
+
+        const identity = await verifyJoin(makeJoin({ role: "owner", roomId: "room-1" }));
+
+        expect(identity).toBeNull();
+      });
+
+      test("insertがerrorなしで行を返さない（data:null）→ null（fail-closed）", async () => {
+        const mock = makeMockSupabaseClient({
+          getUserResult: { data: { user: { id: "user-abc" } }, error: null },
+          roomResult: { data: { owner_user_id: "user-abc" }, error: null },
+          participantResult: { data: null, error: null },
+          participantInsertResult: { data: null, error: null },
+        });
+        setSupabaseAdminClient(mock.client);
+
+        const identity = await verifyJoin(makeJoin({ role: "owner", roomId: "room-1" }));
+
+        expect(identity).toBeNull();
+      });
+
+      test("participants照合（select）がerrorを返す → null（insertは呼ばれない）", async () => {
+        const mock = makeMockSupabaseClient({
+          getUserResult: { data: { user: { id: "user-abc" } }, error: null },
+          roomResult: { data: { owner_user_id: "user-abc" }, error: null },
+          participantResult: { data: null, error: { message: "db error" } },
+        });
+        setSupabaseAdminClient(mock.client);
+
+        const identity = await verifyJoin(makeJoin({ role: "owner", roomId: "room-1" }));
+
+        expect(identity).toBeNull();
+        expect(mock.participantsInsert).not.toHaveBeenCalled();
+      });
+
+      // -----------------------------------------------------------------------
+      // TOCTOU競合フォールバック（must-fix2、コードレビュー指摘対応）
+      // -----------------------------------------------------------------------
+      test(
+        "insertが一意制約違反（code:'23505'）で失敗した場合、再selectで既存行を取得して" +
+          "participantIdに使う（同時joinの競合フォールバック）",
+        async () => {
+          const mock = makeMockSupabaseClient({
+            getUserResult: { data: { user: { id: "user-abc" } }, error: null },
+            roomResult: { data: { owner_user_id: "user-abc" }, error: null },
+          });
+          // 1回目のselect: 行なし（→insertを試みる） / 2回目（再select）: 競合相手が
+          // 先に作成した行が見つかる、という順序をシミュレートする。
+          mock.participantsMaybeSingle
+            .mockReset()
+            .mockResolvedValueOnce({ data: null, error: null })
+            .mockResolvedValueOnce({
+              data: { id: "row-created-by-concurrent-request" },
+              error: null,
+            });
+          // insertは一意制約違反（Postgres 23505）で失敗する。
+          mock.participantsInsertSingle.mockResolvedValue({
+            data: null,
+            error: { message: "duplicate key value violates unique constraint", code: "23505" },
+          });
+          setSupabaseAdminClient(mock.client);
+
+          const identity = await verifyJoin(makeJoin({ role: "owner", roomId: "room-1" }));
+
+          expect(identity).not.toBeNull();
+          expect(identity!.participantId).toBe("row-created-by-concurrent-request");
+          expect(mock.participantsInsert).toHaveBeenCalledTimes(1);
+          expect(mock.participantsMaybeSingle).toHaveBeenCalledTimes(2);
+        },
+      );
+
+      test(
+        "insertが一意制約違反で失敗し、再selectでも行が見つからない場合 → null（fail-closed）",
+        async () => {
+          const mock = makeMockSupabaseClient({
+            getUserResult: { data: { user: { id: "user-abc" } }, error: null },
+            roomResult: { data: { owner_user_id: "user-abc" }, error: null },
+          });
+          mock.participantsMaybeSingle
+            .mockReset()
+            .mockResolvedValueOnce({ data: null, error: null })
+            .mockResolvedValueOnce({ data: null, error: null });
+          mock.participantsInsertSingle.mockResolvedValue({
+            data: null,
+            error: { message: "duplicate key value violates unique constraint", code: "23505" },
+          });
+          setSupabaseAdminClient(mock.client);
+
+          const identity = await verifyJoin(makeJoin({ role: "owner", roomId: "room-1" }));
+
+          expect(identity).toBeNull();
+        },
+      );
+
+      test("insertが一意制約違反以外のerrorで失敗した場合は再selectせずnullを返す", async () => {
+        const mock = makeMockSupabaseClient({
+          getUserResult: { data: { user: { id: "user-abc" } }, error: null },
+          roomResult: { data: { owner_user_id: "user-abc" }, error: null },
+          participantResult: { data: null, error: null },
+        });
+        mock.participantsInsertSingle.mockResolvedValue({
+          data: null,
+          error: { message: "some other db error", code: "OTHER" },
+        });
+        setSupabaseAdminClient(mock.client);
+
+        const identity = await verifyJoin(makeJoin({ role: "owner", roomId: "room-1" }));
+
+        expect(identity).toBeNull();
+        // 通常select(1回) + insert(1回) のみ。一意制約違反以外では再selectしない。
+        expect(mock.participantsMaybeSingle).toHaveBeenCalledTimes(1);
+      });
     });
   });
 

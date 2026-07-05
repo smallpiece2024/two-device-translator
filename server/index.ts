@@ -3,8 +3,9 @@ import {
   SHARED_PLACEHOLDER,
   clientMessageSchema,
   type ServerMessage,
+  type RoomEndedReason,
 } from "@shared/index";
-import { RoomManager, type Room } from "./room/roomManager";
+import { RoomManager, type Room, DEFAULT_AUTO_END_THRESHOLD_MS } from "./room/roomManager";
 import type { Session, CreateSpeechStreamFn } from "./room/session";
 import {
   verifyJoin as defaultVerifyJoin,
@@ -19,6 +20,7 @@ import {
   mockSynthesizeSpeechToBase64,
 } from "./gcp/mockGcp";
 import { routeUtterance, type RoutingParticipant, type MessageRouterDeps } from "./routing/messageRouter";
+import { markRoomEnded } from "./db/supabaseAdmin";
 
 const WS_PORT = parseInt(process.env.WS_PORT ?? "3001", 10);
 const WS_HOST = "127.0.0.1";
@@ -33,6 +35,13 @@ export interface StartServerOptions {
   verifyJoin?: VerifyJoinFn;
   /** 1ルームあたりの最大参加者数（既定2） */
   maxParticipants?: number;
+  /**
+   * 不在自動終了のしきい値（ms）。省略時は環境変数 `AUTO_END_THRESHOLD_MS`
+   * → 既定値（`RoomManager.DEFAULT_AUTO_END_THRESHOLD_MS`、10分）の順で解決する
+   * （bd-e3p、docs/design/server-design.md「再接続・不在・終了判定」参照）。
+   * テスト用に短い値へ差し替え可能。
+   */
+  autoEndThresholdMs?: number;
   /**
    * STT ストリーム生成関数（省略時は `GCP_MODE` 環境変数で解決。
    * `GCP_MODE=mock` のときは E2E 用モック、それ以外は実 GCP 実装）。
@@ -53,6 +62,25 @@ export interface StartServerOptions {
 /** `GCP_MODE=mock` のとき true（E2E テスト用の決定的モックで動作させる）。 */
 function isMockGcpMode(): boolean {
   return process.env.GCP_MODE === "mock";
+}
+
+/**
+ * 不在自動終了のしきい値（ms）を解決する。
+ * 優先順位: `options.autoEndThresholdMs` 明示指定 > 環境変数
+ * `AUTO_END_THRESHOLD_MS`（正の整数のみ有効） > 既定値（10分）。
+ */
+function resolveAutoEndThresholdMs(explicit?: number): number {
+  if (explicit !== undefined) {
+    return explicit;
+  }
+  const envValue = process.env.AUTO_END_THRESHOLD_MS;
+  if (envValue) {
+    const parsed = parseInt(envValue, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return DEFAULT_AUTO_END_THRESHOLD_MS;
 }
 
 /** `Session` から `messageRouter.ts` の `RoutingParticipant` へ変換する */
@@ -98,6 +126,26 @@ function routeCommittedUtterance(
 }
 
 /**
+ * ルーム終了（オーナーの `request_end` / 不在自動終了の両方）の共通処理。
+ * `roomManager.endRoom()` 実行後に呼ぶこと（この関数自身は状態遷移を行わない）。
+ *
+ * - 全参加者へ `room_ended` を配信する
+ * - 各参加者の録音セッション（STTストリーム等）を破棄する
+ * - 各参加者のソケットを閉じる（`room_ended` 送信後、確実に届くよう非同期を待たない）
+ * - DB `rooms.status`/`ended_at` を更新する（service_role、fire-and-forget。
+ *   失敗しても接続終了処理は止めない、docs/design/server-design.md
+ *   「ルーム終了シーケンス」参照）
+ */
+function finalizeRoomEnd(room: Room, reason: RoomEndedReason): void {
+  for (const participant of room.participants.values()) {
+    participant.send({ type: "room_ended", reason });
+    participant.destroyRecording();
+    participant.closeSocket(1000, `room ${reason}`);
+  }
+  void markRoomEnded(room.roomId);
+}
+
+/**
  * WebSocketServer を起動して返す。
  * テスト容易性のため関数として切り出す（index.ts から export）。
  *
@@ -118,7 +166,11 @@ export function startServer(
   options: StartServerOptions = {},
 ): WebSocketServer {
   const wss = new WebSocketServer({ port, host });
-  const roomManager = new RoomManager({ maxParticipants: options.maxParticipants });
+  const roomManager = new RoomManager({
+    maxParticipants: options.maxParticipants,
+    autoEndThresholdMs: resolveAutoEndThresholdMs(options.autoEndThresholdMs),
+    onAutoEnd: (room) => finalizeRoomEnd(room, "auto_timeout"),
+  });
   const verifyJoin = options.verifyJoin ?? defaultVerifyJoin;
   const mockMode = isMockGcpMode();
 
@@ -241,6 +293,14 @@ export function startServer(
               enableTts: message.enableTts,
             });
             if (!joinResult.ok) {
+              // ルームが既に終了済みの場合は error ではなく room_ended を
+              // 返してから接続を閉じる（must-fix1、コードレビュー指摘対応。
+              // docs/design/server-design.md「再接続復帰」参照）。
+              if (joinResult.endedReason) {
+                sendMessage({ type: "room_ended", reason: joinResult.endedReason });
+                ws.close(1000, "room already ended");
+                return;
+              }
               sendError(joinResult.reason, false);
               return;
             }
@@ -248,10 +308,25 @@ export function startServer(
             session = joinResult.session;
             roomId = message.roomId;
 
-            // 既に在室している他参加者へ、新規参加を通知する
+            // 再接続復帰: 同一 participantId の古い接続がまだ開いていた場合、
+            // 新しい接続を正としてそちらを閉じる（二重接続の設計判断、
+            // docs/design/server-design.md「再接続・不在・終了判定」参照）。
+            // 古い接続の close ハンドラは isCurrentSocket() ガードにより、
+            // 既に差し替え済みの session の present/録音状態を壊さない。
+            if (
+              joinResult.reconnected &&
+              joinResult.previousSocket &&
+              joinResult.previousSocket !== ws &&
+              joinResult.previousSocket.readyState === joinResult.previousSocket.OPEN
+            ) {
+              joinResult.previousSocket.close(4000, "reconnected from a new connection");
+            }
+
+            // 既に在室している他参加者へ、新規参加/再接続を通知する
             // （新規参加者自身への joined 応答より先に送ることで、他参加者側での
             // 受信順序に関するテスト時のレース（同時刻に別ソケットへ送信した際の
-            // 到達順不定）の影響を抑える）
+            // 到達順不定）の影響を抑える）。再接続時も participant_joined を
+            // 再送する（server-design.md「再接続復帰」参照）。
             for (const other of joinResult.room.participants.values()) {
               if (other.participantId === session.participantId) {
                 continue;
@@ -330,8 +405,24 @@ export function startServer(
           return;
         }
 
+        case "request_end": {
+          // オーナーのみ有効（websocket-protocol.md「request_end（ルーム終了）」参照）。
+          if (session.role !== "owner") {
+            sendError("only the room owner can end the room", false);
+            return;
+          }
+          if (!roomId) {
+            return;
+          }
+          const ended = roomManager.endRoom(roomId, "owner_ended");
+          if (ended) {
+            finalizeRoomEnd(ended, "owner_ended");
+          }
+          return;
+        }
+
         default:
-          // update_settings / request_end 等の Phase2/3 メッセージは別タスクで扱う
+          // idle_hint 等の Phase3 メッセージは別タスクで扱う
           console.log(
             `[WS Server] Received message (not handled in this phase): ${message.type}`,
           );
@@ -343,16 +434,40 @@ export function startServer(
       console.log(
         `[WS Server] Client disconnected (code=${code}, reason=${reason.toString()})`,
       );
-      if (session) {
-        session.destroyRecording();
+
+      if (!session) {
+        return;
       }
-      if (session && roomId) {
+
+      // 再接続により差し替え済みの「古い」物理接続の close イベント。
+      // 新しい接続が正であり、こちらの close で present/録音状態を
+      // 上書きしてはならない（server/room/session.ts の isCurrentSocket 参照）。
+      if (!session.isCurrentSocket(ws)) {
+        return;
+      }
+
+      session.destroyRecording();
+
+      if (roomId) {
         const room = roomManager.getRoom(roomId);
         const leftParticipantId = session.participantId;
+        // ルームが既に終了済み（request_end/自動終了で room_ended 配信済み）の
+        // 場合は、finalizeRoomEnd 側で全参加者へ通知済みのため participant_left
+        // を重ねて送らない（wasEnded は leave() 呼び出し前の状態で判定する。
+        // leave() 自体は status を変更しないため前後どちらで見ても同じだが、
+        // 意図を明確にするため呼び出し前の状態を見る）。
+        const wasEnded = room?.status === "ended";
         roomManager.leave(roomId, leftParticipantId);
-        if (room) {
+        if (room && !wasEnded) {
           for (const other of room.participants.values()) {
-            other.send({ type: "participant_left", participantId: leftParticipantId });
+            if (other.participantId === leftParticipantId) {
+              continue;
+            }
+            other.send({
+              type: "participant_left",
+              participantId: leftParticipantId,
+              reason: "disconnected",
+            });
           }
         }
       }

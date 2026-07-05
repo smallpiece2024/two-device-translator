@@ -330,3 +330,51 @@ describe("Session — STTのfinalがtranscript未定義（空文字）で発火�
     expect(onUtteranceCommitted).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// attachSocket — 再接続時の録音破棄分岐（bd-e3p、テストレビュー指摘対応）
+// ---------------------------------------------------------------------------
+describe("Session — attachSocket（再接続時のソケット差し替え）", () => {
+  test(
+    "旧セッションが録音中（isRecording）の状態で再接続すると、destroyRecording相当の" +
+      "処理でSTTストリームがdestroyされ、孤立ストリームが残らない",
+    () => {
+      const { session } = makeSession();
+      const { factory, instances } = createFakeSpeechStreamFactory();
+      const onUtteranceCommitted = jest.fn();
+
+      session.startRecording(makeStartMessage(), {
+        onUtteranceCommitted,
+        createSpeechStream: factory,
+      });
+      expect(session.isRecording).toBe(true);
+
+      const newWs = makeFakeWs();
+      session.attachSocket(newWs);
+
+      // 旧STTストリームがdestroyされ（孤立させない）、確定されずに破棄される
+      expect(instances[0].destroy).toHaveBeenCalledTimes(1);
+      expect(onUtteranceCommitted).not.toHaveBeenCalled();
+      expect(session.isRecording).toBe(false);
+    },
+  );
+
+  test("録音中でない状態での再接続は、destroyRecording相当の処理を呼ばない（副作用なし）", () => {
+    const { session } = makeSession();
+
+    const newWs = makeFakeWs();
+    expect(() => session.attachSocket(newWs)).not.toThrow();
+    expect(session.isRecording).toBe(false);
+  });
+
+  test("attachSocketはpresent:falseだったセッションをtrueに戻し、差し替え前のソケットを返す", () => {
+    const { session, ws: oldWs } = makeSession();
+    session.present = false; // 不在（切断済み）状態を模す
+
+    const newWs = makeFakeWs();
+    const returned = session.attachSocket(newWs);
+
+    expect(returned).toBe(oldWs);
+    expect(session.present).toBe(true);
+  });
+});

@@ -140,7 +140,16 @@ interface ParticipantRuntime {
 - **`AUTH_MODE=insecure`（E2E・開発専用の互換モード）**: ログインUI（bd-63d）・招待フロー（bd-jny）実装前の移行措置として、環境変数 `AUTH_MODE` が `"insecure"`（厳密一致）のときのみ token 検証をスキップする。既定は strict（本検証）。有効時は起動ログに警告を明示し、本番では絶対に設定しない。Playwright E2E はこのモードでWSサーバーを起動する。
 - **非同期検証と切断の競合対策（幽霊参加者ガード）**: `verifyJoin` の await 中にクライアントが切断すると close イベントが session=null のまま先に発火するため、検証成功後・`RoomManager.join` 直前に `ws.readyState` を確認し、閉じていれば登録しない（登録すると除去経路がなく `maxParticipants` 枠を永久占有する）。回帰テストあり（`tests/integration/room-join-auth.test.ts`）。
 - 検証中に追加の `join` が届いた場合は `error`（`fatal:false`）で拒否する（`joinInProgress` ガード）。
-- **後続タスクへの繰り延べの解消状況**: (1) guest の「DB の Participant 行が存在すること」の確認は **bd-jny で実装済み**（`participants` を `id`+`room_id`+`role='guest'` で照合、行なし/エラーは fail-closed）。(2) owner の `participantId` の安定ID化（現状は接続ごとに `randomUUID()`）は **bd-e3p の必須スコープ**（WS join 時に room_id+user_id で participants 行を upsert し、DB行IDを participantId とする）。
+- **後続タスクへの繰り延べの解消状況**: (1) guest の「DB の Participant 行が存在すること」の確認は **bd-jny で実装済み**（`participants` を `id`+`room_id`+`role='guest'` で照合、行なし/エラーは fail-closed）。(2) owner の `participantId` の安定ID化は **bd-e3p で実装済み**（下記）。
+
+#### 実装確定事項（bd-e3p で追加: 再接続復帰・不在/自動終了）
+
+- **owner participantId の安定ID化**: join 時に `participants` を `room_id`+`user_id`（role='owner'）で照合し、既存行の id を、なければ insert した行の id を participantId に使う。**select→insert の TOCTOU 競合対策**として部分一意インデックス `participants_room_owner_unique_idx (room_id, user_id) where role='owner'`（migration `20260705145201`）を追加し、insert が 23505（一意制約違反）で失敗したら再 select で勝者の行を取得するフォールバックを実装。
+- **presence**: close では参加者を削除せず `present=false` にして席を保持（`participant_left(reason:"disconnected")` を配信）。同一 participantId での再 join はソケット差し替え（`attachSocket`。進行中の録音セッションは差し替え前に破棄）で復帰し、二重接続時は新しい接続を正として旧を close(4000)。旧ソケットの close は `isCurrentSocket` ガードで無視。**`AUTH_MODE=insecure` のみ leave で参加者を削除**（participantId が毎回変わり再接続復帰が成立しないため。席保持すると枠を永久占有する）。
+- **自動終了**: present が1人以下の状態が `AUTO_END_THRESHOLD_MS`（既定10分。env / `StartServerOptions.autoEndThresholdMs` で上書き可）継続で `room_ended(reason:"auto_timeout")` を配信して終了。タイマーは Room 単位・unref・破棄時クリア。
+- **明示終了**: `request_end` はオーナーのみ受理（ゲストは fatal:false エラー）。`room_ended(reason:"owner_ended")` を全員に配信→録音破棄→ソケット close→DB `rooms.status='ended'` 更新（fire-and-forget）。
+- **ended ルームへの再 join**: `{type:"room_ended", reason}` を送信してから close(1000)（エラーではなく終了案内を返す）。ended ルームはレジストリに残す。
+- **スコープ外（要フォローアップ）**: FR-12.3 の「再開」（ended ルームの再活性化）は未実装。フロント側の `room_ended` 受信ハンドリング（reducer の ROOM_ENDED 発火）も未実装で別タスク。
 
 ---
 

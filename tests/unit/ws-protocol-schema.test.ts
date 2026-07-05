@@ -16,6 +16,8 @@ import {
   updateSettingsSchema,
   participantJoinedSchema,
   participantLeftSchema,
+  requestEndSchema,
+  roomEndedSchema,
 } from "../../shared/ws-protocol/schema";
 
 /**
@@ -321,9 +323,9 @@ describe("ws-protocol schema", () => {
       expect(() => clientMessageSchema.parse(input)).toThrow();
     });
 
-    it("Phase2/3の request_end（未実装）を拒否する", () => {
+    it("request_end（bd-e3p、オーナーによるルーム終了要求）をparseできる", () => {
       const input = { type: "request_end" };
-      expect(() => clientMessageSchema.parse(input)).toThrow();
+      expect(clientMessageSchema.parse(input)).toEqual(input);
     });
 
     it("type フィールド自体が欠落している場合は拒否する", () => {
@@ -489,8 +491,21 @@ describe("ws-protocol schema", () => {
       expect(() => serverMessageSchema.parse(input)).toThrow();
     });
 
-    it("Phase2/3の room_ended（未実装）を拒否する", () => {
-      const input = { type: "room_ended", reason: "owner_ended" };
+    it.each(["owner_ended", "auto_timeout"])(
+      "room_ended（bd-e3p、reason='%s'）をparseできる",
+      (reason) => {
+        const input = { type: "room_ended", reason };
+        expect(serverMessageSchema.parse(input)).toEqual(input);
+      },
+    );
+
+    it("room_ended: reason が未対応の値の場合は拒否する", () => {
+      const input = { type: "room_ended", reason: "unknown_reason" };
+      expect(() => serverMessageSchema.parse(input)).toThrow();
+    });
+
+    it("room_ended: reason 欠落を拒否する", () => {
+      const input = { type: "room_ended" };
       expect(() => serverMessageSchema.parse(input)).toThrow();
     });
   });
@@ -546,16 +561,17 @@ describe("ws-protocol schema", () => {
   });
 
   describe("個別スキーマのエクスポート", () => {
-    it("joinSchema, updateSettingsSchema, startSchema, audioClientSchema, commitSchema, stopSchema が個別にexportされている", () => {
+    it("joinSchema, updateSettingsSchema, startSchema, audioClientSchema, commitSchema, stopSchema, requestEndSchema が個別にexportされている", () => {
       expect(joinSchema).toBeDefined();
       expect(updateSettingsSchema).toBeDefined();
       expect(startSchema).toBeDefined();
       expect(audioClientSchema).toBeDefined();
       expect(commitSchema).toBeDefined();
       expect(stopSchema).toBeDefined();
+      expect(requestEndSchema).toBeDefined();
     });
 
-    it("joinedSchema, messageSchema, transcript系, audioServerSchema, participant系, errorSchema が個別にexportされている", () => {
+    it("joinedSchema, messageSchema, transcript系, audioServerSchema, participant系, errorSchema, roomEndedSchema が個別にexportされている", () => {
       expect(joinedSchema).toBeDefined();
       expect(messageSchema).toBeDefined();
       expect(transcriptInterimSchema).toBeDefined();
@@ -565,6 +581,7 @@ describe("ws-protocol schema", () => {
       expect(participantJoinedSchema).toBeDefined();
       expect(participantLeftSchema).toBeDefined();
       expect(errorSchema).toBeDefined();
+      expect(roomEndedSchema).toBeDefined();
     });
   });
 });

@@ -4,12 +4,13 @@
  * Next.js（src/）と WSサーバー（server/）の型ドリフトを防ぐため、この
  * ファイルを唯一の正本とする（docs/design/websocket-protocol.md 参照）。
  *
- * 本ファイルは Phase1 の範囲（join / start / audio / commit / stop、および
+ * 本ファイルは Phase1（join / start / audio / commit / stop、および
  * joined / transcript_interim / transcript_final / utterance_committed /
- * message / audio / error）のみを定義する。Phase2/3 のメッセージ
- * （update_settings, request_end, participant_*, idle_hint, summary,
- * room_ended 等）は将来追加する。`z.discriminatedUnion` は配列へスキーマを
- * 追加するだけで拡張できるため、追加を阻害しない設計になっている。
+ * message / audio / error）に加え、Phase2 の一部
+ * （update_settings, participant_joined/left, request_end, room_ended）を
+ * 定義する（bd-e3p で request_end / room_ended を追加）。Phase3 のメッセージ
+ * （idle_hint, summary 等）は将来追加する。`z.discriminatedUnion` は配列へ
+ * スキーマを追加するだけで拡張できるため、追加を阻害しない設計になっている。
  *
  * 依存は zod のみ（shared/ の制約）。
  */
@@ -66,6 +67,15 @@ export const stopSchema = z.object({
   type: z.literal("stop"),
 });
 
+/**
+ * オーナーによるルーム終了要求（bd-e3p）。
+ * オーナーのみ有効。非オーナーが送った場合はサーバー側で `error`（`fatal:false`）
+ * とする（docs/design/websocket-protocol.md「request_end（ルーム終了）」参照）。
+ */
+export const requestEndSchema = z.object({
+  type: z.literal("request_end"),
+});
+
 export const clientMessageSchema = z.discriminatedUnion("type", [
   joinSchema,
   updateSettingsSchema,
@@ -73,6 +83,7 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
   audioClientSchema,
   commitSchema,
   stopSchema,
+  requestEndSchema,
 ]);
 
 // ─────────────────────────────────────────────
@@ -160,10 +171,19 @@ export const participantJoinedSchema = z.object({
   participant: participantSummarySchema,
 });
 
+/**
+ * 退室理由（bd-e3p）。`"disconnected"`=一時断（再接続で復帰しうる）、
+ * `"ended"`=ルーム終了に伴う退室（現状の実装ではルーム終了時は `room_ended` を
+ * 送るため使用しない。将来の選択的な強制退室に備えて予約）。
+ * 既存クライアント・テストとの互換のため任意項目とする（省略時は理由不明）。
+ */
+export const participantLeftReasonSchema = z.enum(["disconnected", "ended"]);
+
 /** 他参加者の退室通知（切断時、在室中の参加者へ配信） */
 export const participantLeftSchema = z.object({
   type: z.literal("participant_left"),
   participantId: z.string().min(1),
+  reason: participantLeftReasonSchema.optional(),
 });
 
 /** エラー通知。`fatal:true` の場合は接続終了 */
@@ -171,6 +191,18 @@ export const errorSchema = z.object({
   type: z.literal("error"),
   message: z.string(),
   fatal: z.boolean(),
+});
+
+/**
+ * ルーム終了理由（bd-e3p）。`"owner_ended"`=オーナーの明示終了（`request_end`）、
+ * `"auto_timeout"`=不在自動終了（FR-12.2）。
+ */
+export const roomEndedReasonSchema = z.enum(["owner_ended", "auto_timeout"]);
+
+/** ルーム終了通知（全参加者へ配信。受信後、クライアントは接続を終了してよい） */
+export const roomEndedSchema = z.object({
+  type: z.literal("room_ended"),
+  reason: roomEndedReasonSchema,
 });
 
 export const serverMessageSchema = z.discriminatedUnion("type", [
@@ -183,4 +215,5 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
   participantJoinedSchema,
   participantLeftSchema,
   errorSchema,
+  roomEndedSchema,
 ]);
