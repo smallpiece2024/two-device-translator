@@ -51,8 +51,8 @@
 - [x] ローカル認証: `gcloud auth application-default login` → `gcloud auth application-default set-quota-project <dev-project-id>`
 
 ### 3-2. Supabase（Phase 2 の認証・DB実装までに）
-- [ ] Supabase アカウントを作成する（GitHub ログイン可）
-- [ ] プロジェクト①（prod想定）を作成する ※dev は CLI ローカルを基本とする
+- [x] Supabase アカウントを作成する（GitHub ログイン可）
+- [x] プロジェクト①（prod想定）を作成する ※dev は CLI ローカルを基本とする
 - [ ] GCP で OAuth 同意画面＋クライアントID を作成し、Supabase Auth の Google プロバイダに設定する
 - [ ] `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` を `.env` に設定する（コミットしない）
 

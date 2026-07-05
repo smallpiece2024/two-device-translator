@@ -143,6 +143,7 @@ service_role キーは **RLS をバイパス**するため、露出すると全�
 - seed（`plans` の初期行）は `supabase/seed.sql` に置く。
 - RLS ポリシー・トリガー（`user_profiles` 自動作成、`participants` の role CHECK）も migration に含める。
 - ローカル開発は Supabase ローカルスタック（`supabase start`）を利用可。CI では実 Supabase を呼ばない（抽象化層でモック、CLAUDE.md CI 節）。
+- **クラウド環境への適用手順（bd-fo6 で追加・厳守）**: `supabase db push`（migration適用）の直後に、**必ず `plans` の seed 投入まで行う**（`supabase/seed.sql` は `db reset` 時のローカル専用で、`db push` では実行されない）。`user_profiles.plan_id` は `plans.id` へのFK（default `'free'`）であり、`handle_new_user` トリガーが `plan_id='free'` でプロフィールを作成するため、**`free` プラン行が無いとサインアップ自体がFK違反で全滅する**。適用は冪等なSQL（`insert ... on conflict do nothing`）で行うこと。
 
 ---
 
