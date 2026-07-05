@@ -1,0 +1,96 @@
+/*
+ * ChatTimeline のスタイル（LINE風バブル・3層レイアウトのうちタイムライン部分）。
+ * `docs/design/styling-design.md` のデザイントークンに従う。
+ * globals.css にトークンが未定義の環境でも崩れないよう、各 CSS変数には
+ * フォールバック値を指定する。
+ */
+
+.timeline {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-md, 16px) var(--space-sm, 8px);
+  background-color: var(--color-bg, #eef1f4);
+  gap: var(--space-sm, 8px);
+}
+
+.empty {
+  margin: auto;
+  color: var(--color-text-muted, #6b6b75);
+  font-size: var(--fs-sm, 0.85rem);
+  text-align: center;
+}
+
+.messageList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm, 8px);
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.messageRow {
+  display: flex;
+  width: 100%;
+}
+
+.own {
+  justify-content: flex-end;
+}
+
+.other {
+  justify-content: flex-start;
+}
+
+.bubble {
+  display: flex;
+  flex-direction: column;
+  max-width: 78%;
+  padding: var(--space-sm, 8px) var(--space-md, 16px);
+  border-radius: var(--radius-bubble, 16px);
+  font-size: var(--fs-md, 1rem);
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.bubbleOwn {
+  background-color: var(--color-bubble-self, #9be36b);
+  color: var(--color-text, #1c1c20);
+  border-bottom-right-radius: var(--radius-sm, 4px);
+  align-items: flex-end;
+}
+
+.bubbleOther {
+  background-color: var(--color-bubble-other, #ffffff);
+  color: var(--color-text, #1c1c20);
+  border: 1px solid var(--color-border, #d9d9e0);
+  border-bottom-left-radius: var(--radius-sm, 4px);
+  align-items: flex-start;
+}
+
+.bubbleInterim {
+  background-color: transparent;
+  border: 1px dashed var(--color-interim, #8a8a93);
+  color: var(--color-interim, #8a8a93);
+  font-style: italic;
+}
+
+.speakerName {
+  font-size: var(--fs-sm, 0.85rem);
+  font-weight: 600;
+  color: var(--color-text-muted, #6b6b75);
+  margin-bottom: var(--space-xs, 4px);
+}
+
+.messageText {
+  margin: 0;
+}
+
+.timestamp {
+  margin-top: var(--space-xs, 4px);
+  font-size: var(--fs-sm, 0.85rem);
+  color: var(--color-text-muted, #6b6b75);
+}

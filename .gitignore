@@ -141,3 +141,15 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# Claude Code (cc_dev_team) — machine-local / work files
+.claude/settings.local.json
+.claude/worktrees/
+tmp/
+
+# WS server build output
+dist-server/
+
+# Playwright E2E artifacts
+/test-results/
+/playwright-report/

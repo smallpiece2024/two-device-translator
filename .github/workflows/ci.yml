@@ -1,0 +1,73 @@
+# CI — lint / typecheck / test / build
+#
+# 方針（詳細は CLAUDE.md の「CI（GitHub Actions）」節を参照）:
+# - エージェントのローカル検証と独立したセーフティネット。npm スクリプトを唯一の情報源とする
+# - 本物の GCP / LLM / Supabase は呼ばない（シークレットを置かない）
+# - コードがまだ無い間（package.json なし）はスキップして green を維持する
+# - E2E（Playwright）はここでは回さない。main への PR ゲートとして将来追加する
+#   （フェイクマイク --use-fake-device-for-media-stream ＋ モック STT サーバーを想定）
+
+name: CI
+
+on:
+  push:
+    branches:
+      - dev
+      - 'feature/**'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # ドキュメントのみの期間・変更では検証をスキップ（green のまま通す）
+      - name: Check for application code
+        id: code
+        run: |
+          if [ -f package.json ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::package.json が無いため検証をスキップしました（ドキュメントのみ）"
+          fi
+
+      - name: Setup Node.js
+        if: steps.code.outputs.present == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        if: steps.code.outputs.present == 'true'
+        run: npm ci
+
+      - name: Lint
+        if: steps.code.outputs.present == 'true'
+        run: npm run lint
+
+      - name: Typecheck (web)
+        if: steps.code.outputs.present == 'true'
+        run: npm run typecheck
+
+      - name: Typecheck (server)
+        if: steps.code.outputs.present == 'true'
+        run: npm run typecheck:server
+
+      - name: Test (Jest)
+        if: steps.code.outputs.present == 'true'
+        run: npm test
+
+      - name: Build
+        if: steps.code.outputs.present == 'true'
+        run: npm run build

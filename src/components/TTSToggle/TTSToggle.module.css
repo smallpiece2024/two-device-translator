@@ -1,0 +1,57 @@
+/* ============================================================
+   TTSToggle: 読み上げ(TTS) ON/OFF スイッチ
+   ============================================================ */
+
+.ttsToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm, 8px);
+}
+
+.label {
+  font-size: var(--fs-sm, 0.85rem);
+  color: var(--color-text-muted, #6b6b75);
+  white-space: nowrap;
+}
+
+.switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 44px;
+  height: 24px;
+  padding: 2px;
+  border: none;
+  border-radius: 999px;
+  background-color: var(--color-border, #d9d9e0);
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+  flex-shrink: 0;
+}
+
+.switch:focus-visible {
+  outline: 2px solid var(--color-accent, #2563eb);
+  outline-offset: 2px;
+}
+
+.switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.switchOn {
+  background-color: var(--color-accent, #2563eb);
+}
+
+.thumb {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background-color: var(--color-surface, #ffffff);
+  transition: transform 0.15s ease;
+  transform: translateX(0);
+}
+
+.switchOn .thumb {
+  transform: translateX(20px);
+}
