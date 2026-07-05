@@ -74,6 +74,7 @@ Next.js 側は用途別に3つのクライアント生成関数を用意する�
 
 ### ポリシーの要点
 
+- **GRANT（テーブルレベル権限）を RLS とセットで管理する（bd-882 で追加）**: Supabase CLI の新デフォルト（新規テーブルは Data API ロールへ自動公開されない）のため、RLS ポリシーだけではアクセスできず、migration 内で明示的な `GRANT` が必要（Postgres の仕様: GRANT＝テーブルレベル、RLS＝行レベルの二層で両方必要）。逆に GRANT はポリシーの範囲を超えて与えない（例: `participants` は authenticated へ select のみ GRANT。insert の GRANT なし＝ポリシーなしとの二重防御）。anon への書き込み GRANT・`to` 句省略（暗黙 PUBLIC）・`grant all` は禁止で、CI の静的ガード（`tests/unit/supabase/rls-policies.test.ts`）が全マイグレーション横断で検知する。
 - **履歴・要約の永続閲覧はオーナーのみ**（FR-9.3 / FR-11.3）。`messages` / `summaries` の select は「そのルームの `owner_user_id = auth.uid()`」に限定。ゲスト向けの永続 select ポリシーは作らない。
 - `messages` / `summaries` の insert は WSサーバーの service_role のみ（会話中の書き込み）。anon/authenticated には insert 権限を与えない。
 - `participants` の作成（ゲスト参加）は Route Handler `POST /api/invites/[token]` が service_role または SECURITY DEFINER 関数で行う（ゲストは Supabase セッションを持たないため）。
