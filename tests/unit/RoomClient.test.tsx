@@ -395,4 +395,79 @@ describe("RoomClient", () => {
     expect(secondQueue.enqueue).toHaveBeenCalledWith("ZGF0YQ==");
     expect(firstQueue.enqueue).not.toHaveBeenCalled();
   });
+
+  /**
+   * bd-two-device-translator-652: WS再接続時にチャットタイムラインが全消去される
+   * バグの修正確認テスト（TDD Red）。
+   *
+   * シナリオ: 接続→joined→message受信でタイムラインに表示→サーバー側close
+   * （fatalではない）→自動再接続（バックオフ 500ms）→再joined
+   * （Phase1ではサーバーがrecentMessages: []を返す）→元のメッセージが
+   * 表示され続けていることを検証する。
+   *
+   * 現状の実装は close ハンドラで `dispatch({ type: "RESET" })` を実行し、
+   * reducer の RESET が messages を含む全状態を初期化してしまうため、
+   * このテストは失敗する（修正後は成功する想定）。
+   */
+  it("再接続（close→再connect→joined）をまたいでもタイムラインのメッセージが表示され続ける", () => {
+    render(<RoomClient roomId="room-abc" wsUrl="ws://localhost:3001/ws" />);
+    const firstSocket = latestSocket();
+
+    act(() => {
+      firstSocket.dispatchOpen();
+      firstSocket.dispatchMessage({
+        type: "joined",
+        participantId: "p1",
+        room: { id: "room-abc", status: "active" },
+        participants: [],
+        recentMessages: [],
+      });
+    });
+
+    act(() => {
+      firstSocket.dispatchMessage({
+        type: "message",
+        messageId: "m1",
+        roomId: "room-abc",
+        speakerParticipantId: "p1",
+        speakerName: "自分",
+        sourceLanguage: "ja-JP",
+        originalText: "こんにちは",
+        displayText: "こんにちは",
+        displayLanguage: "ja-JP",
+        isOwnMessage: true,
+        createdAt: new Date().toISOString(),
+      });
+    });
+
+    expect(screen.getByText("こんにちは")).toBeInTheDocument();
+
+    // サーバー側切断（fatalではない）→ 自動再接続がスケジュールされる
+    act(() => {
+      firstSocket.dispatchClose();
+    });
+
+    // バックオフ（BASE_RECONNECT_DELAY_MS=500ms、初回attempt=0）経過で再接続
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+
+    const secondSocket = latestSocket();
+    expect(secondSocket).not.toBe(firstSocket);
+
+    act(() => {
+      secondSocket.dispatchOpen();
+      // Phase1ではサーバーは recentMessages を常に空配列で返す
+      secondSocket.dispatchMessage({
+        type: "joined",
+        participantId: "p1",
+        room: { id: "room-abc", status: "active" },
+        participants: [],
+        recentMessages: [],
+      });
+    });
+
+    // 再接続をまたいでも元のメッセージが表示され続けていること
+    expect(screen.getByText("こんにちは")).toBeInTheDocument();
+  });
 });

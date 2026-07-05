@@ -3,6 +3,7 @@ import {
   roomReducer,
   toMessageView,
   type MessageView,
+  type RoomState,
 } from "../../src/app/(public)/room/[roomId]/reducer";
 import type { JoinedMessage, MessageMessage } from "../../shared/index";
 
@@ -139,6 +140,142 @@ describe("roomReducer", () => {
     expect(state.status).toBe("connecting");
     expect(state.selfParticipantId).toBeNull();
     expect(state.participants).toEqual([]);
+  });
+
+  /**
+   * bd-two-device-translator-652: WS再接続時にチャットタイムラインが全消去される
+   * バグの修正確認テスト（TDD Red）。
+   *
+   * 修正後の仕様:
+   * - RESET: messages は維持する（interim はクリア、status は connecting）
+   * - JOINED: recentMessages が空のときは既存 messages を保持する
+   *           （Phase1 ではサーバーが recentMessages を常に [] で返すため、
+   *            従来の実装だと再接続のたびに画面のタイムラインが消えていた）
+   */
+  describe("再接続時のタイムライン保持（bd-two-device-translator-652）", () => {
+    const existingMessages: MessageView[] = [
+      {
+        messageId: "m1",
+        speakerParticipantId: "p1",
+        speakerName: "Alice",
+        sourceLanguage: "ja-JP",
+        originalText: "こんにちは",
+        displayText: "こんにちは",
+        displayLanguage: "ja-JP",
+        isOwnMessage: true,
+        createdAt: "2026-07-04T00:00:00.000Z",
+      },
+      {
+        messageId: "m2",
+        speakerParticipantId: "p2",
+        speakerName: "Bob",
+        sourceLanguage: "en-US",
+        originalText: "hi",
+        displayText: "やあ",
+        displayLanguage: "ja-JP",
+        isOwnMessage: false,
+        createdAt: "2026-07-04T00:00:01.000Z",
+      },
+    ];
+
+    it("RESET はメッセージ2件保持状態でも messages を維持し、interim をクリアし status を connecting にする", () => {
+      const withMessagesAndInterim: RoomState = {
+        ...initialRoomState,
+        status: "joined",
+        messages: existingMessages,
+        interim: "話している途中",
+      };
+
+      const state = roomReducer(withMessagesAndInterim, { type: "RESET" });
+
+      // 現状の実装は RESET で initialRoomState に戻すため messages が [] になり、
+      // この期待値（2件維持）で失敗する（修正後は成功する想定）。
+      expect(state.messages).toHaveLength(2);
+      expect(state.messages).toEqual(existingMessages);
+      expect(state.interim).toBe("");
+      expect(state.status).toBe("connecting");
+    });
+
+    it("RESET はメッセージ以外（selfParticipantId・participants・error等）は初期化する", () => {
+      const withMessagesAndInterim: RoomState = {
+        ...initialRoomState,
+        status: "joined",
+        selfParticipantId: "p1",
+        participants: [
+          { participantId: "p1", role: "guest", language: "ja-JP", present: true },
+        ],
+        messages: existingMessages,
+        interim: "話している途中",
+        error: "軽微なエラー",
+      };
+
+      const state = roomReducer(withMessagesAndInterim, { type: "RESET" });
+
+      expect(state.selfParticipantId).toBeNull();
+      expect(state.participants).toEqual([]);
+      expect(state.error).toBeNull();
+      // メッセージのみ維持される
+      expect(state.messages).toEqual(existingMessages);
+    });
+
+    it("JOINED で recentMessages が空配列のとき、既存の messages を保持する（再接続時のjoined再送に対応）", () => {
+      const reconnecting: RoomState = {
+        ...initialRoomState,
+        status: "connecting",
+        messages: existingMessages,
+      };
+
+      const state = roomReducer(reconnecting, {
+        type: "JOINED",
+        participantId: "p1",
+        room: { id: "room-1", status: "active" },
+        participants: [
+          { participantId: "p1", role: "guest", language: "ja-JP", present: true },
+        ],
+        recentMessages: [],
+      });
+
+      // 現状の実装は recentMessages.map(...) で常に上書きするため、
+      // recentMessages: [] のとき messages が [] になってしまい失敗する
+      // （修正後は既存メッセージが保持され成功する想定）。
+      expect(state.messages).toEqual(existingMessages);
+      expect(state.status).toBe("joined");
+    });
+
+    it("JOINED で recentMessages が非空のときは recentMessages 由来の内容で置き換える（既存挙動のリグレッションガード）", () => {
+      const reconnecting: RoomState = {
+        ...initialRoomState,
+        status: "connecting",
+        messages: existingMessages,
+      };
+
+      const newRecentMessage: MessageMessage = {
+        type: "message",
+        messageId: "m3",
+        roomId: "room-1",
+        speakerParticipantId: "p2",
+        speakerName: "Carol",
+        sourceLanguage: "en-US",
+        originalText: "history",
+        displayText: "履歴",
+        displayLanguage: "ja-JP",
+        isOwnMessage: false,
+        createdAt: "2026-07-04T00:00:02.000Z",
+      };
+
+      const state = roomReducer(reconnecting, {
+        type: "JOINED",
+        participantId: "p1",
+        room: { id: "room-1", status: "active" },
+        participants: [],
+        recentMessages: [newRecentMessage],
+      });
+
+      // Phase2 の履歴復元を見据え、recentMessages が非空のときは従来どおり
+      // recentMessages 由来の内容で置き換える（現状の実装でも成立するはず）。
+      expect(state.messages).toHaveLength(1);
+      expect(state.messages[0].messageId).toBe("m3");
+    });
   });
 
   it("toMessageView が type/roomId を除いたビューへ変換する", () => {
