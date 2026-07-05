@@ -435,6 +435,78 @@ describe("roomReducer", () => {
       expect(state.roomEnded).toBe(true);
     });
 
+    /**
+     * two-device-translator-4xi: room_ended（オーナー終了／不在自動終了）
+     * ハンドリング。reason（"owner_ended" | "auto_timeout"）は endedReason に
+     * 保持され、reason省略時は既存値を維持する。ROOM_ENDED は messages を
+     * 変更しない（終了バナー表示後も会話履歴は表示され続ける想定）。
+     */
+    describe("ROOM_ENDED の reason ハンドリング（two-device-translator-4xi）", () => {
+      it("reason省略時は endedReason を変更しない（既存値を維持する）", () => {
+        const state = roomReducer(initialRoomState, { type: "ROOM_ENDED" });
+        expect(state.roomEnded).toBe(true);
+        expect(state.endedReason).toBeNull();
+      });
+
+      it("reason: owner_ended を渡すと endedReason に反映される", () => {
+        const state = roomReducer(initialRoomState, {
+          type: "ROOM_ENDED",
+          reason: "owner_ended",
+        });
+        expect(state.roomEnded).toBe(true);
+        expect(state.endedReason).toBe("owner_ended");
+      });
+
+      it("reason: auto_timeout を渡すと endedReason に反映される", () => {
+        const state = roomReducer(initialRoomState, {
+          type: "ROOM_ENDED",
+          reason: "auto_timeout",
+        });
+        expect(state.roomEnded).toBe(true);
+        expect(state.endedReason).toBe("auto_timeout");
+      });
+
+      it("既に endedReason が設定済みの状態で reason省略の ROOM_ENDED を受けても上書きしない", () => {
+        const alreadyEnded = roomReducer(initialRoomState, {
+          type: "ROOM_ENDED",
+          reason: "owner_ended",
+        });
+
+        const state = roomReducer(alreadyEnded, { type: "ROOM_ENDED" });
+
+        expect(state.endedReason).toBe("owner_ended");
+      });
+
+      it("messages を変更しない（会話履歴は維持される）", () => {
+        const withMessages: RoomState = {
+          ...initialRoomState,
+          status: "joined",
+          messages: [
+            {
+              messageId: "m1",
+              speakerParticipantId: "p1",
+              speakerName: "Alice",
+              sourceLanguage: "ja-JP",
+              originalText: "こんにちは",
+              displayText: "こんにちは",
+              displayLanguage: "ja-JP",
+              isOwnMessage: true,
+              createdAt: "2026-07-04T00:00:00.000Z",
+            },
+          ],
+        };
+
+        const state = roomReducer(withMessages, {
+          type: "ROOM_ENDED",
+          reason: "owner_ended",
+        });
+
+        expect(state.messages).toEqual(withMessages.messages);
+        expect(state.roomEnded).toBe(true);
+        expect(state.endedReason).toBe("owner_ended");
+      });
+    });
+
     it("未知のアクション（default分岐）では状態を変更しない", () => {
       const state = roomReducer(initialRoomState, {
         type: "UNKNOWN_ACTION",

@@ -470,4 +470,213 @@ describe("RoomClient", () => {
     // 再接続をまたいでも元のメッセージが表示され続けていること
     expect(screen.getByText("こんにちは")).toBeInTheDocument();
   });
+
+  /**
+   * two-device-translator-4xi: room_ended（オーナー終了／不在自動終了）受信時の
+   * ハンドリング。終了バナー表示（reason別文言）・以降の自動再接続停止・
+   * 操作UIのdisabled化・オーナーの終了ボタン（2段階確認）・guestには
+   * 終了ボタン非表示、を検証する（docs/design/frontend-design.md
+   * room_ended ハンドリング節）。
+   */
+  describe("room_ended ハンドリング（two-device-translator-4xi）", () => {
+    function joinRoom(socket: MockWebSocket) {
+      socket.dispatchOpen();
+      socket.dispatchMessage({
+        type: "joined",
+        participantId: "p1",
+        room: { id: "room-abc", status: "active" },
+        participants: [],
+        recentMessages: [],
+      });
+    }
+
+    it("room_ended(owner_ended)受信で終了バナーが表示され、以降close→再接続されない", () => {
+      render(<RoomClient roomId="room-abc" wsUrl="ws://localhost:3001/ws" role="owner" />);
+      const socket = latestSocket();
+
+      act(() => {
+        joinRoom(socket);
+      });
+
+      act(() => {
+        socket.dispatchMessage({ type: "room_ended", reason: "owner_ended" });
+      });
+
+      expect(screen.getByText("会話は終了しました")).toBeInTheDocument();
+      expect(screen.getByText("理由: オーナーによる終了")).toBeInTheDocument();
+
+      const instancesBeforeClose = MockWebSocket.instances.length;
+
+      // サーバー側切断。room_ended後は自動再接続がスケジュールされないこと。
+      act(() => {
+        socket.dispatchClose();
+      });
+
+      act(() => {
+        jest.advanceTimersByTime(10_000);
+      });
+
+      expect(MockWebSocket.instances.length).toBe(instancesBeforeClose);
+      // バナーは引き続き表示されたまま（エラー表示に置き換わらない）
+      expect(screen.getByText("会話は終了しました")).toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it("room_ended(auto_timeout)受信で理由文言が出し分けられる", () => {
+      render(<RoomClient roomId="room-abc" wsUrl="ws://localhost:3001/ws" role="guest" />);
+      const socket = latestSocket();
+
+      act(() => {
+        joinRoom(socket);
+      });
+
+      act(() => {
+        socket.dispatchMessage({ type: "room_ended", reason: "auto_timeout" });
+      });
+
+      expect(screen.getByText("会話は終了しました")).toBeInTheDocument();
+      expect(screen.getByText("理由: 一定時間の不在による自動終了")).toBeInTheDocument();
+    });
+
+    it("roomEnded後はLanguageSelector・TTSToggle・Recorderの開始ボタンがdisabledになる", () => {
+      render(<RoomClient roomId="room-abc" wsUrl="ws://localhost:3001/ws" role="owner" />);
+      const socket = latestSocket();
+
+      act(() => {
+        joinRoom(socket);
+      });
+
+      expect(screen.getByRole("combobox", { name: "話す言語" })).not.toBeDisabled();
+      expect(screen.getByRole("switch", { name: "読み上げ(TTS)" })).not.toBeDisabled();
+      expect(screen.getByRole("button", { name: "開始" })).not.toBeDisabled();
+
+      act(() => {
+        socket.dispatchMessage({ type: "room_ended", reason: "owner_ended" });
+      });
+
+      expect(screen.getByRole("combobox", { name: "話す言語" })).toBeDisabled();
+      expect(screen.getByRole("switch", { name: "読み上げ(TTS)" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "開始" })).toBeDisabled();
+    });
+
+    it("role=ownerでは終了ボタンが表示され、クリックで確認ダイアログ→「終了する」でrequest_endが送信される", async () => {
+      const user = userEvent.setup({
+        advanceTimers: (ms) => {
+          jest.advanceTimersByTime(ms);
+        },
+      });
+      render(<RoomClient roomId="room-abc" wsUrl="ws://localhost:3001/ws" role="owner" />);
+      const socket = latestSocket();
+
+      act(() => {
+        joinRoom(socket);
+      });
+
+      const endButton = screen.getByRole("button", { name: "ルームを終了する" });
+      expect(endButton).toBeInTheDocument();
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+
+      await user.click(endButton);
+
+      const dialog = screen.getByRole("alertdialog", { name: "ルーム終了の確認" });
+      expect(dialog).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "終了する" }));
+
+      const sent = socket.getSentMessages();
+      expect(sent.some((m) => m.type === "request_end")).toBe(true);
+    });
+
+    it("確認ダイアログで「キャンセル」を押すとrequest_endは送信されずダイアログが閉じる", async () => {
+      const user = userEvent.setup({
+        advanceTimers: (ms) => {
+          jest.advanceTimersByTime(ms);
+        },
+      });
+      render(<RoomClient roomId="room-abc" wsUrl="ws://localhost:3001/ws" role="owner" />);
+      const socket = latestSocket();
+
+      act(() => {
+        joinRoom(socket);
+      });
+
+      await user.click(screen.getByRole("button", { name: "ルームを終了する" }));
+      expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "キャンセル" }));
+
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "ルームを終了する" })).toBeInTheDocument();
+
+      const sent = socket.getSentMessages();
+      expect(sent.some((m) => m.type === "request_end")).toBe(false);
+    });
+
+    it("role=guestでは終了ボタンが表示されない", () => {
+      render(<RoomClient roomId="room-abc" wsUrl="ws://localhost:3001/ws" role="guest" />);
+      const socket = latestSocket();
+
+      act(() => {
+        joinRoom(socket);
+      });
+
+      expect(screen.queryByRole("button", { name: "ルームを終了する" })).not.toBeInTheDocument();
+    });
+
+    it("録音中に room_ended を受信すると、forceStop の配線経由で Recorder から stop メッセージが送信される", async () => {
+      const user = userEvent.setup({
+        advanceTimers: (ms) => {
+          jest.advanceTimersByTime(ms);
+        },
+      });
+      const getUserMediaMock = jest.fn().mockResolvedValue({
+        getTracks: () => [{ stop: jest.fn() }],
+      });
+      Object.defineProperty(navigator, "mediaDevices", {
+        value: { getUserMedia: getUserMediaMock },
+        configurable: true,
+      });
+
+      class MockMediaRecorder {
+        static isTypeSupported(): boolean {
+          return false;
+        }
+        state = "inactive";
+        ondataavailable: ((event: unknown) => void) | null = null;
+        start(): void {
+          this.state = "recording";
+        }
+        stop(): void {
+          this.state = "inactive";
+        }
+      }
+      // @ts-expect-error jsdom には MediaRecorder が存在しないためモックで上書きする
+      globalThis.MediaRecorder = MockMediaRecorder;
+
+      render(<RoomClient roomId="room-abc" wsUrl="ws://localhost:3001/ws" role="owner" />);
+      const socket = latestSocket();
+
+      act(() => {
+        joinRoom(socket);
+      });
+
+      await user.click(screen.getByRole("button", { name: "開始" }));
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "停止" })).toBeInTheDocument();
+      });
+
+      act(() => {
+        socket.dispatchMessage({ type: "room_ended", reason: "owner_ended" });
+      });
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "開始" })).toBeInTheDocument();
+      });
+      expect(screen.getByRole("button", { name: "開始" })).toBeDisabled();
+
+      const sent = socket.getSentMessages();
+      expect(sent.some((m) => m.type === "stop")).toBe(true);
+    });
+  });
 });

@@ -42,3 +42,99 @@
   gap: 1rem;
   flex-wrap: wrap;
 }
+
+/* ルーム終了バナー（room_ended 受信時、終端状態の表示） */
+.endedBanner {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid #f0b429;
+  border-radius: 0.5rem;
+  background-color: #fff8e6;
+  color: #7a5b00;
+}
+
+.endedBannerTitle {
+  font-weight: 700;
+  font-size: 1rem;
+}
+
+.endedBannerReason {
+  font-size: 0.875rem;
+  color: #8a6d1f;
+}
+
+/* オーナーの終了ボタン・確認ダイアログ */
+.endSection {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.endButton {
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #a00;
+  background-color: transparent;
+  border: 1px solid #a00;
+  border-radius: 0.25rem;
+  cursor: pointer;
+}
+
+.endButton:hover {
+  background-color: #fee;
+}
+
+.endConfirm {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid #a00;
+  border-radius: 0.5rem;
+  background-color: #fee;
+  width: 100%;
+}
+
+.endConfirmMessage {
+  font-size: 0.875rem;
+  color: #7a0000;
+  margin: 0;
+}
+
+.endConfirmActions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+.endConfirmButton {
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: #fff;
+  background-color: #c00;
+  border: 1px solid #c00;
+  border-radius: 0.25rem;
+  cursor: pointer;
+}
+
+.endConfirmButton:hover {
+  background-color: #a00;
+}
+
+.endCancelButton {
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #171717;
+  background-color: transparent;
+  border: 1px solid #ccc;
+  border-radius: 0.25rem;
+  cursor: pointer;
+}
+
+.endCancelButton:hover {
+  background-color: #eee;
+}

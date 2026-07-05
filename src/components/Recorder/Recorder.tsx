@@ -54,6 +54,13 @@ export interface RecorderProps {
   /** 発話区切り: 最大秒数。既定 `DEFAULT_MAX_SECONDS` */
   maxSeconds?: number;
   /**
+   * true の間、録音中であれば強制的に停止する（ルーム終了時など、呼び出し側が
+   * 能動的に録音を打ち切りたい場合に使う）。`disabled` は開始操作のみを抑止する
+   * ため、既に録音中のセッションを止めるにはこのフラグを使う
+   * （`docs/design/frontend-design.md` room_ended ハンドリング節）。既定 false。
+   */
+  forceStop?: boolean;
+  /**
    * 録音の内部状態（`RecorderStatus`）が変化するたびに呼ばれるコールバック。
    * 呼び出し側（RoomClient）が録音開始/停止をアプリ全体の状態（`AppStatus`）に
    * 連動させるためのフック。結線は呼び出し側の責務とし、本コンポーネントは
@@ -77,6 +84,7 @@ export function Recorder({
   silenceMs = DEFAULT_SILENCE_MS,
   maxChars = DEFAULT_MAX_CHARS,
   maxSeconds = DEFAULT_MAX_SECONDS,
+  forceStop = false,
   onStatusChange,
 }: RecorderProps) {
   const [status, setStatus] = useState<RecorderStatus>("idle");
@@ -214,6 +222,27 @@ export function Recorder({
     if (status !== "recording") return;
     sendMessageRef.current({ type: "commit" });
   }, [status]);
+
+  /**
+   * `forceStop=true` を受けたら、録音中であれば強制的に停止する
+   * （ルーム終了時の即時停止。`docs/design/frontend-design.md` room_ended
+   * ハンドリング節）。`handleStop` は `status==="recording"` 以外は no-op なので
+   * 何度呼ばれても安全。
+   *
+   * 【レース対策】依存配列に `status` も含める。`forceStop` が true になった
+   * 瞬間、まだ `getUserMedia` の許可待ち（`status==="starting"`）であることが
+   * あり、その時点ではこの effect が実行されても `handleStop` は no-op で終わる。
+   * その後 `forceStop` 自体は値が変わらないため、`status` を依存に入れておかないと
+   * `getUserMedia` 解決後に `status` が "recording" に遷移しても effect が
+   * 再実行されず、room_ended 後もマイク許可待ちからそのまま録音が続いてしまう。
+   * `status` を依存に含めることで "starting"→"recording" の遷移時にも再評価され、
+   * `forceStop && status === "recording"` を確実に検出して停止できる。
+   */
+  useEffect(() => {
+    if (forceStop && status === "recording") {
+      handleStop();
+    }
+  }, [forceStop, status, handleStop]);
 
   const isRecording = status === "recording";
   const isStarting = status === "starting";

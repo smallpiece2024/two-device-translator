@@ -12,7 +12,12 @@
  * のため、このタスクでは token を仮発行して誰でも入室できる簡易動作とする。
  */
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import { serverMessageSchema, type ClientMessage, type SupportedLanguage } from "@shared/index";
+import {
+  serverMessageSchema,
+  type ClientMessage,
+  type RoomEndedReason,
+  type SupportedLanguage,
+} from "@shared/index";
 import { ChatTimeline } from "@/components/ChatTimeline/ChatTimeline";
 import { Recorder, type RecorderStatus } from "@/components/Recorder/Recorder";
 import { LanguageSelector } from "@/components/LanguageSelector/LanguageSelector";
@@ -65,10 +70,21 @@ export function RoomClient({
   // 自分が聞き手としてTTSを受け取るかどうか（`start.enableTts` および
   // audioPlaybackQueue の再生可否の両方に連動する）。
   const [ttsEnabled, setTtsEnabled] = useState(true);
+  // オーナーの終了ボタンの2段階確認（誤タップ防止）。
+  const [endConfirming, setEndConfirming] = useState(false);
 
   const socketRef = useRef<WebSocket | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * `room_ended` を受信済みか（終端状態）。close ハンドラで参照して以降の
+   * 自動再接続を停止するためのフラグ。ended ルームへ再接続しても再び
+   * room_ended→close となるだけで無駄なため（server-design.md 実装確定事項
+   * bd-e3p 節）。コンポーネントの生存期間を通じて維持する（reducer の
+   * roomEnded state と異なり、close ハンドラのクロージャから同期的に
+   * 参照できる ref にする）。
+   */
+  const roomEndedRef = useRef(false);
   const tokenRef = useRef<string | undefined>(undefined);
   if (tokenRef.current === undefined) {
     // `guestToken`（`gtt_guest` クッキー由来）があればそれを正式なゲスト識別
@@ -133,6 +149,24 @@ export function RoomClient({
     },
     [sendMessage],
   );
+
+  /**
+   * オーナーの終了ボタン操作ハンドラ（2段階確認、誤タップ防止）。
+   * 1回目のクリックで確認表示に切り替え、確認表示中の「終了する」クリックで
+   * `request_end` を送信する（docs/design/websocket-protocol.md `request_end`節）。
+   */
+  const handleRequestEndClick = useCallback(() => {
+    if (!endConfirming) {
+      setEndConfirming(true);
+      return;
+    }
+    sendMessage({ type: "request_end" });
+    setEndConfirming(false);
+  }, [endConfirming, sendMessage]);
+
+  const handleCancelEnd = useCallback(() => {
+    setEndConfirming(false);
+  }, []);
 
   /**
    * Recorder の内部状態変化をアプリ全体の状態（AppStatus）に連動させる。
@@ -208,6 +242,13 @@ export function RoomClient({
         const message = result.data;
         switch (message.type) {
           case "joined":
+            // 稀に room.status==="ended" で joined が届くケース（型上許容）でも
+            // 終端状態として扱い、以降の自動再接続を止める（room_ended 受信時と
+            // 同じ扱い、docs/design/server-design.md 実装確定事項 bd-e3p 節）。
+            if (message.room.status === "ended") {
+              roomEndedRef.current = true;
+              audioQueueRef.current?.setEnabled(false);
+            }
             dispatch({
               type: "JOINED",
               participantId: message.participantId,
@@ -250,6 +291,16 @@ export function RoomClient({
               socket.close();
             }
             break;
+          case "room_ended":
+            // room_ended は終端状態。以降の自動再接続を止める（サーバーは
+            // ended ルームへの再joinに対しても room_ended→close(1000) を返すのみ
+            // で、再接続ループは無駄になるため）。録音中なら強制停止し、
+            // 音声キューは新規再生を止める（再生中の1件は最後まで再生させる、
+            // audioPlaybackQueue.setEnabled の設計判断を踏襲）。
+            roomEndedRef.current = true;
+            audioQueueRef.current?.setEnabled(false);
+            dispatch({ type: "ROOM_ENDED", reason: message.reason });
+            break;
         }
       });
 
@@ -259,6 +310,12 @@ export function RoomClient({
         if (fatal) {
           // fatal エラーは message ハンドラで既にサーバー由来の文言を dispatch 済み。
           // ここで汎用文言を重ねて上書きしない。
+          return;
+        }
+
+        if (roomEndedRef.current) {
+          // room_ended（終端状態）に伴う close。終了バナーは既に room_ended
+          // ハンドラで dispatch 済みのため、ここでは再接続もエラー表示もしない。
           return;
         }
 
@@ -316,6 +373,14 @@ export function RoomClient({
         </p>
       )}
 
+      {state.roomEnded && (
+        <div role="status" className={styles.endedBanner} data-ended-reason={state.endedReason ?? undefined}>
+          <p className={styles.endedBannerTitle}>会話は終了しました</p>
+          <p className={styles.endedBannerReason}>{endedReasonLabel(state.endedReason)}</p>
+          {/* Phase3: ここに終了時要約（summary）を表示する（docs/design/frontend-design.md AIAssistantPanel節） */}
+        </div>
+      )}
+
       <section className={styles.participants} aria-label="参加者一覧">
         <p>参加者: {state.participants.filter((p) => p.present).length}人</p>
       </section>
@@ -324,22 +389,63 @@ export function RoomClient({
         <LanguageSelector
           value={currentLanguage}
           onChange={setCurrentLanguage}
-          disabled={isRecording}
+          disabled={isRecording || state.roomEnded}
         />
-        <TTSToggle enabled={ttsEnabled} onChange={handleTtsToggle} />
+        <TTSToggle enabled={ttsEnabled} onChange={handleTtsToggle} disabled={state.roomEnded} />
       </section>
 
       <Recorder
         language={currentLanguage}
         sendMessage={sendMessage}
-        disabled={!isJoinedOrRecording}
+        disabled={!isJoinedOrRecording || state.roomEnded}
+        forceStop={state.roomEnded}
         enableTts={ttsEnabled}
         onStatusChange={handleRecorderStatusChange}
       />
 
+      {role === "owner" && !state.roomEnded && (
+        <section className={styles.endSection} aria-label="ルーム終了">
+          {endConfirming ? (
+            <div className={styles.endConfirm} role="alertdialog" aria-label="ルーム終了の確認">
+              <p className={styles.endConfirmMessage}>
+                本当にルームを終了しますか？会話は終了し、元に戻せません。
+              </p>
+              <div className={styles.endConfirmActions}>
+                <button
+                  type="button"
+                  onClick={handleRequestEndClick}
+                  className={styles.endConfirmButton}
+                >
+                  終了する
+                </button>
+                <button type="button" onClick={handleCancelEnd} className={styles.endCancelButton}>
+                  キャンセル
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button type="button" onClick={handleRequestEndClick} className={styles.endButton}>
+              ルームを終了する
+            </button>
+          )}
+        </section>
+      )}
+
       <ChatTimeline messages={state.messages} interim={state.interim || null} />
     </div>
   );
+}
+
+/** `state.endedReason` に応じた終了バナー用の文言（FR-12.1/FR-12.2） */
+function endedReasonLabel(reason: RoomEndedReason | null): string {
+  switch (reason) {
+    case "owner_ended":
+      return "理由: オーナーによる終了";
+    case "auto_timeout":
+      return "理由: 一定時間の不在による自動終了";
+    default:
+      return "";
+  }
 }
 
 function statusLabel(status: AppStatus): string {
