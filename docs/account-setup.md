@@ -57,8 +57,8 @@
 - [x] `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` を `.env` に設定する（コミットしない）
 
 ### 3-3. Anthropic（Phase 3 の AI 機能までに）
-- [ ] Anthropic アカウント＋APIキーを作成する（dev/prod でキーを分ける）
-- [ ] **月次支出上限を設定する**（dev は低めに）
+- [x] Anthropic アカウント＋APIキーを作成する（dev/prod でキーを分ける）
+- [x] **月次支出上限を設定する**（dev は低めに）
 
 ### 3-4. ドメイン＋GCP prod（初回デプロイまでに）
 - [ ] ドメインを1つ取得する（例: お名前.com / Cloudflare）
