@@ -1,6 +1,7 @@
 /** @type {import('jest').Config} */
 const config = {
   testEnvironment: "node",
+  setupFiles: ["<rootDir>/jest.setup.js"],
   transform: {
     "^.+\\.tsx?$": [
       "ts-jest",
@@ -20,6 +21,10 @@ const config = {
     "^@shared/(.*)$": "<rootDir>/shared/$1",
     "\\.module\\.css$": "identity-obj-proxy",
     "^@/(.*)$": "<rootDir>/src/$1",
+    // jose は package.json の exports 条件で jsdom 環境だと "browser"（ESM専用）が
+    // 解決されテストが壊れるため、Node CJS ビルドへ強制的にマップする
+    // （テストはNode実行のためブラウザ固有APIは不要）。
+    "^jose$": "<rootDir>/node_modules/jose/dist/node/cjs/index.js",
   },
   testMatch: [
     "**/tests/**/*.test.ts",

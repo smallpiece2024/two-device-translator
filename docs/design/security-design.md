@@ -69,7 +69,8 @@ export async function signGuestToken(p: { roomId: string; participantId: string;
     .setProtectedHeader({ alg: "HS256" }).setExpirationTime(`${p.expSec}s`).sign(secret);
 }
 export async function verifyGuestToken(token: string) {
-  const { payload } = await jwtVerify(token, secret); // 期限切れ/改竄は例外
+  // algorithms を HS256 に固定（alg混同攻撃への多層防御、bd-qpq で追加）。期限切れ/改竄は例外
+  const { payload } = await jwtVerify(token, secret, { algorithms: ["HS256"] });
   return payload as { roomId: string; participantId: string };
 }
 ```

@@ -21,6 +21,7 @@
     "@google-cloud/translate": "^9.4.2",
     "@supabase/ssr": "^0.12.0",
     "@supabase/supabase-js": "^2.110.0",
+    "jose": "^5.10.0",
     "next": "^15.3.4",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
