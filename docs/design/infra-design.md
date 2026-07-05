@@ -108,6 +108,7 @@ module.exports = {
 | `WS_PORT` | ws | 不可 | WSサーバー待受（既定 3001） |
 | `ENABLE_TTS` | ws | 不可 | `false` で音声合成を無効化（プロトタイプ由来） |
 | `GCP_MODE` | ws | 不可 | **E2Eテスト専用**。`mock` で STT/翻訳/TTS を決定的モック（`server/gcp/mockGcp.ts`）に切替。**本番・開発の通常運用では設定禁止**（未設定＝実GCP。誤設定検出のため mock 時は起動ログに明示される）（bd-713 で追加） |
+| `AUTH_MODE` | ws | 不可 | **E2E・開発専用**。`insecure` で WS接続時のtoken検証をスキップ（Phase1互換）。**本番では設定禁止**（未設定＝strict＝本検証。有効時は起動ログに警告）（bd-0jy で追加） |
 | `SUPABASE_URL` | web/ws | 不可 | Supabase プロジェクトURL |
 | `SUPABASE_SERVICE_KEY` | ws / 一部 Route Handler | **不可** | service_role キー（[supabase-design.md](./supabase-design.md#service_role-の使用箇所) 参照） |
 | `NEXT_PUBLIC_SUPABASE_URL` | web | 可 | ブラウザ用 Supabase URL |

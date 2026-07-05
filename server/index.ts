@@ -6,7 +6,11 @@ import {
 } from "@shared/index";
 import { RoomManager, type Room } from "./room/roomManager";
 import type { Session, CreateSpeechStreamFn } from "./room/session";
-import { verifyJoin as defaultVerifyJoin, type VerifyJoinFn } from "./auth/verifyParticipant";
+import {
+  verifyJoin as defaultVerifyJoin,
+  isInsecureAuthMode,
+  type VerifyJoinFn,
+} from "./auth/verifyParticipant";
 import { translateText } from "./gcp/translate";
 import { synthesizeSpeechToBase64 } from "./gcp/textToSpeech";
 import {
@@ -21,7 +25,11 @@ const WS_HOST = "127.0.0.1";
 
 /** `startServer` の挙動を差し替えるためのオプション（テスト・Phase2差し替え用） */
 export interface StartServerOptions {
-  /** join 検証ロジック（既定は Phase1 ダミー実装。Phase2 で Supabase/ゲストJWT検証へ差し替え） */
+  /**
+   * join 検証ロジック（既定は `server/auth/verifyParticipant.ts` の本実装。
+   * Supabase アクセストークン(owner)/ゲストJWT(guest)を検証する非同期関数。
+   * テスト・`AUTH_MODE=insecure` 相当の差し替えに使う）。
+   */
   verifyJoin?: VerifyJoinFn;
   /** 1ルームあたりの最大参加者数（既定2） */
   maxParticipants?: number;
@@ -134,6 +142,12 @@ export function startServer(
           "(server/gcp/mockGcp.ts). Do NOT use this in production.",
       );
     }
+    if (isInsecureAuthMode()) {
+      console.warn(
+        "[WS Server] AUTH_MODE=insecure: join token verification is DISABLED " +
+          "(server/auth/verifyParticipant.ts). 本番使用禁止 (do NOT use this in production).",
+      );
+    }
   });
 
   wss.on("connection", (ws: WebSocket) => {
@@ -142,6 +156,11 @@ export function startServer(
     // join 完了後にのみ非 null になる（それまでは join 待ち状態）
     let session: Session | null = null;
     let roomId: string | null = null;
+    // join 検証（Supabase/ゲストJWT検証は非同期）が完了するまでの間、
+    // 後続の join メッセージの多重処理を防ぐガード
+    // （検証中に他メッセージが届いた場合は session が null のままのため、
+    // 既存の「join required」エラー経路に自然に落ちる）。
+    let joinInProgress = false;
 
     const sendMessage = (message: ServerMessage): void => {
       if (ws.readyState !== ws.OPEN) {
@@ -191,43 +210,72 @@ export function startServer(
           return;
         }
 
-        const identity = verifyJoin(message);
-        if (!identity) {
-          sendError("Authentication failed", true);
+        // 検証中（非同期）に届いた追加の join は多重処理せず拒否する
+        // （fatal:false。最初の join の検証結果を待たせる）
+        if (joinInProgress) {
+          sendError("join is already being verified", false);
           return;
         }
+        joinInProgress = true;
 
-        const joinResult = roomManager.join(message.roomId, identity, ws, {
-          enableTts: message.enableTts,
-        });
-        if (!joinResult.ok) {
-          sendError(joinResult.reason, false);
-          return;
-        }
+        void (async () => {
+          try {
+            const identity = await verifyJoin(message);
+            if (!identity) {
+              sendError("Authentication failed", true);
+              return;
+            }
 
-        session = joinResult.session;
-        roomId = message.roomId;
+            // 検証待ち中の切断との競合対策: verifyJoin の await 中にクライアントが
+            // 切断すると、close イベントは session=null のためクリーンアップ処理を
+            // 素通りして先に発火してしまう（除去経路がない = close は再発火しない）。
+            // ここでチェックせずに roomManager.join を呼ぶと、切断済みソケットの
+            // セッションがルームに残り続け、maxParticipants の枠を永久に占有する
+            // 「幽霊参加者」バグになる。以降は同期処理のみのため、この1箇所の
+            // readyState チェックで十分。
+            if (ws.readyState !== ws.OPEN) {
+              return;
+            }
 
-        // 既に在室している他参加者へ、新規参加を通知する
-        // （新規参加者自身への joined 応答より先に送ることで、他参加者側での
-        // 受信順序に関するテスト時のレース（同時刻に別ソケットへ送信した際の
-        // 到達順不定）の影響を抑える）
-        for (const other of joinResult.room.participants.values()) {
-          if (other.participantId === session.participantId) {
-            continue;
+            const joinResult = roomManager.join(message.roomId, identity, ws, {
+              enableTts: message.enableTts,
+            });
+            if (!joinResult.ok) {
+              sendError(joinResult.reason, false);
+              return;
+            }
+
+            session = joinResult.session;
+            roomId = message.roomId;
+
+            // 既に在室している他参加者へ、新規参加を通知する
+            // （新規参加者自身への joined 応答より先に送ることで、他参加者側での
+            // 受信順序に関するテスト時のレース（同時刻に別ソケットへ送信した際の
+            // 到達順不定）の影響を抑える）
+            for (const other of joinResult.room.participants.values()) {
+              if (other.participantId === session.participantId) {
+                continue;
+              }
+              other.send({ type: "participant_joined", participant: session.toSummary() });
+            }
+
+            sendMessage({
+              type: "joined",
+              participantId: joinResult.session.participantId,
+              room: { id: joinResult.room.roomId, status: joinResult.room.status },
+              participants: Array.from(joinResult.room.participants.values()).map(
+                (s) => s.toSummary(),
+              ),
+              recentMessages: [],
+            });
+          } catch (err) {
+            const errMessage = err instanceof Error ? err.message : String(err);
+            console.error("[WS Server] join verification failed unexpectedly:", errMessage);
+            sendError("Authentication failed", true);
+          } finally {
+            joinInProgress = false;
           }
-          other.send({ type: "participant_joined", participant: session.toSummary() });
-        }
-
-        sendMessage({
-          type: "joined",
-          participantId: joinResult.session.participantId,
-          room: { id: joinResult.room.roomId, status: joinResult.room.status },
-          participants: Array.from(joinResult.room.participants.values()).map(
-            (s) => s.toSummary(),
-          ),
-          recentMessages: [],
-        });
+        })();
         return;
       }
 

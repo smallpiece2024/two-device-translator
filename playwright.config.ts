@@ -63,6 +63,10 @@ export default defineConfig({
         GCP_MODE: "mock",
         WS_PORT: String(WS_PORT),
         ENABLE_TTS: "true",
+        // ログインUI(bd-63d)・招待フロー(bd-jny)が未実装のため、E2Eでは
+        // 仮トークンでの join を通す互換モードを使う（本番では設定禁止。
+        // server/auth/verifyParticipant.ts 参照）。
+        AUTH_MODE: "insecure",
       },
     },
   ],

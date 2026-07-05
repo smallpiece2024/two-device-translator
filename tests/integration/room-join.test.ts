@@ -16,6 +16,26 @@ describe("WS server - room join (RoomManager結合テスト)", () => {
   const HOST = "127.0.0.1";
   let wss: WebSocketServer;
   let clients: WebSocket[] = [];
+  // このテストは仮トークン("dummy-token")での join を前提にしている
+  // （招待フロー未実装のため、正規のSupabase/ゲストJWTは発行できない）。
+  // bd-0jy で join 検証が本実装（strict）化されたため、このテストの意図
+  // （RoomManager連携の検証）を壊さない最小対応として AUTH_MODE=insecure
+  // を明示し、Phase1相当のダミー検証を使う
+  // （server/auth/verifyParticipant.ts「移行互換モード」参照）。
+  let originalAuthMode: string | undefined;
+
+  beforeAll(() => {
+    originalAuthMode = process.env.AUTH_MODE;
+    process.env.AUTH_MODE = "insecure";
+  });
+
+  afterAll(() => {
+    if (originalAuthMode === undefined) {
+      delete process.env.AUTH_MODE;
+    } else {
+      process.env.AUTH_MODE = originalAuthMode;
+    }
+  });
 
   function getPort(server: WebSocketServer): number {
     const address = server.address();

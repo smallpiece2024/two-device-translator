@@ -148,6 +148,12 @@ describe("startServer() の GCP_MODE / 明示オプションによる実装差�
   let clients: WebSocket[] = [];
   let originalGcpMode: string | undefined;
   let originalEnableTts: string | undefined;
+  // このテストは仮トークン("dummy-token")での join を前提にしている
+  // （招待フロー未実装のため、正規のSupabase/ゲストJWTは発行できない）。
+  // bd-0jy で join 検証が本実装（strict）化されたため、このテストの意図
+  // （GCP実装差し替えロジックの検証）を壊さない最小対応として
+  // AUTH_MODE=insecure を明示する（server/auth/verifyParticipant.ts 参照）。
+  let originalAuthMode: string | undefined;
 
   function getPort(server: WebSocketServer): number {
     const address = server.address();
@@ -166,7 +172,9 @@ describe("startServer() の GCP_MODE / 明示オプションによる実装差�
   beforeEach(() => {
     originalGcpMode = process.env.GCP_MODE;
     originalEnableTts = process.env.ENABLE_TTS;
+    originalAuthMode = process.env.AUTH_MODE;
     delete process.env.ENABLE_TTS;
+    process.env.AUTH_MODE = "insecure";
   });
 
   afterEach((done) => {
@@ -179,6 +187,11 @@ describe("startServer() の GCP_MODE / 明示オプションによる実装差�
       delete process.env.ENABLE_TTS;
     } else {
       process.env.ENABLE_TTS = originalEnableTts;
+    }
+    if (originalAuthMode === undefined) {
+      delete process.env.AUTH_MODE;
+    } else {
+      process.env.AUTH_MODE = originalAuthMode;
     }
 
     clients.forEach((client) => client.terminate());

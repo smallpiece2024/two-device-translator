@@ -190,6 +190,12 @@ describe("参加者イベント通知・TTSトグル初期化（結合テスト�
   let wss: WebSocketServer;
   let clients: WebSocket[] = [];
   let speechStreams: MockRecognizeStream[];
+  // このテストは仮トークン("dummy-token")での join を前提にしている
+  // （招待フロー未実装のため、正規のSupabase/ゲストJWTは発行できない）。
+  // bd-0jy で join 検証が本実装（strict）化されたため、このテストの意図
+  // （参加者イベント通知・TTSトグルの検証）を壊さない最小対応として
+  // AUTH_MODE=insecure を明示する（server/auth/verifyParticipant.ts 参照）。
+  let originalAuthMode: string | undefined;
 
   function getPort(server: WebSocketServer): number {
     const address = server.address();
@@ -206,6 +212,9 @@ describe("参加者イベント通知・TTSトグル初期化（結合テスト�
   }
 
   beforeEach(async () => {
+    originalAuthMode = process.env.AUTH_MODE;
+    process.env.AUTH_MODE = "insecure";
+
     speechStreams = [createMockRecognizeStream(), createMockRecognizeStream()];
     setSpeechClient(createMockSpeechClient(speechStreams));
     setTranslateClient(createMockTranslateClient((text) => `[EN]${text}`));
@@ -216,6 +225,12 @@ describe("参加者イベント通知・TTSトグル初期化（結合テスト�
   });
 
   afterEach((done) => {
+    if (originalAuthMode === undefined) {
+      delete process.env.AUTH_MODE;
+    } else {
+      process.env.AUTH_MODE = originalAuthMode;
+    }
+
     clients.forEach((client) => client.terminate());
     clients = [];
     resetSpeechClient();
