@@ -149,3 +149,7 @@ tmp/
 
 # WS server build output
 dist-server/
+
+# Playwright E2E artifacts
+/test-results/
+/playwright-report/

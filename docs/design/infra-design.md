@@ -106,6 +106,8 @@ module.exports = {
 | `GOOGLE_CLOUD_PROJECT` | ws | 不可 | GCP プロジェクトID |
 | `GOOGLE_APPLICATION_CREDENTIALS` | ws | 不可 | （鍵ファイル利用時のみ）本番は原則不要（アタッチSA） |
 | `WS_PORT` | ws | 不可 | WSサーバー待受（既定 3001） |
+| `ENABLE_TTS` | ws | 不可 | `false` で音声合成を無効化（プロトタイプ由来） |
+| `GCP_MODE` | ws | 不可 | **E2Eテスト専用**。`mock` で STT/翻訳/TTS を決定的モック（`server/gcp/mockGcp.ts`）に切替。**本番・開発の通常運用では設定禁止**（未設定＝実GCP。誤設定検出のため mock 時は起動ログに明示される）（bd-713 で追加） |
 | `SUPABASE_URL` | web/ws | 不可 | Supabase プロジェクトURL |
 | `SUPABASE_SERVICE_KEY` | ws / 一部 Route Handler | **不可** | service_role キー（[supabase-design.md](./supabase-design.md#service_role-の使用箇所) 参照） |
 | `NEXT_PUBLIC_SUPABASE_URL` | web | 可 | ブラウザ用 Supabase URL |
@@ -131,7 +133,15 @@ module.exports = {
 - 検証コマンドの単一情報源は package.json の npm スクリプト（`lint` / `typecheck` / `typecheck:server` / `test` / `build`）。**Phase1 の雛形作成時にこの5スクリプトを必ず定義**（Jest は `--passWithNoTests`）。
 - コードが無い間（`package.json` なし）はスキップして green を維持（既存 ci.yml の挙動）。
 - **CI に GCP / LLM / Supabase の本物を呼ばない・シークレットを置かない**。外部APIは抽象化層でモック（[server-design.md](./server-design.md#テスト方針概要) / [ai-assistant-design.md](./ai-assistant-design.md#テスト方針概要) 参照）。
-- E2E（Playwright）は毎 push では回さない。main への PR 時に追加予定（フェイクマイク `--use-fake-device-for-media-stream` ＋ モック STT）。
+- E2E（Playwright）は毎 push では回さない。main への PR 時に追加予定（CI への組込みは未実施）。
+
+### E2E テスト構成（bd-713 で実装）
+
+- `npm run test:e2e`（`playwright test`）。テストは `e2e/`、設定は `playwright.config.ts`。Jest とは分離（`jest.config.js` の `testPathIgnorePatterns` で `e2e/` を除外）。
+- `webServer` で Next.js（port 3000）と WSサーバー（port 3001、`GCP_MODE=mock`）を自動起動。フェイクマイクは Chromium の `--use-fake-device-for-media-stream` / `--use-fake-ui-for-media-stream`。
+- モック仕様: STT は音声チャンク4回目で言語別固定フレーズの final を発火、翻訳は `[{target}] {text}` 形式、TTS は極小無音MP3（[gcp-integration.md](./gcp-integration.md#テスト方針gcp連携) 参照）。実GCP API は呼ばない。
+- `reuseExistingServer: false`: 起動済みの `npm run dev`（実GCP構成）を誤って再利用しないよう fail-fast にしている。**`test:e2e` 実行前に dev サーバーを停止すること**。
+- 再接続シナリオ（サーバー再起動またぎ・指数バックオフ・fatal後の抑止）は本E2Eのスコープ外（別タスクで管理）。
 
 ### npm スクリプト（雛形定義対象）
 

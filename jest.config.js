@@ -30,8 +30,9 @@ const config = {
   moduleFileExtensions: ["ts", "tsx", "js", "jsx", "json"],
   testTimeout: 20000,
   // .claude/worktrees/ 配下（並列エージェントの作業コピー）を走査対象から除外
+  // e2e/ 配下は Playwright 専用テスト（*.spec.ts）のため Jest の走査対象から除外する
   modulePathIgnorePatterns: ["<rootDir>/.claude/", "<rootDir>/.next/", "<rootDir>/dist-server/"],
-  testPathIgnorePatterns: ["/node_modules/", "<rootDir>/.claude/"],
+  testPathIgnorePatterns: ["/node_modules/", "<rootDir>/.claude/", "<rootDir>/e2e/"],
 };
 
 module.exports = config;

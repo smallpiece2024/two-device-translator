@@ -5,11 +5,16 @@ import {
   type ServerMessage,
 } from "@shared/index";
 import { RoomManager, type Room } from "./room/roomManager";
-import type { Session } from "./room/session";
+import type { Session, CreateSpeechStreamFn } from "./room/session";
 import { verifyJoin as defaultVerifyJoin, type VerifyJoinFn } from "./auth/verifyParticipant";
 import { translateText } from "./gcp/translate";
 import { synthesizeSpeechToBase64 } from "./gcp/textToSpeech";
-import { routeUtterance, type RoutingParticipant } from "./routing/messageRouter";
+import {
+  createMockSpeechStream,
+  mockTranslateText,
+  mockSynthesizeSpeechToBase64,
+} from "./gcp/mockGcp";
+import { routeUtterance, type RoutingParticipant, type MessageRouterDeps } from "./routing/messageRouter";
 
 const WS_PORT = parseInt(process.env.WS_PORT ?? "3001", 10);
 const WS_HOST = "127.0.0.1";
@@ -20,6 +25,26 @@ export interface StartServerOptions {
   verifyJoin?: VerifyJoinFn;
   /** 1ルームあたりの最大参加者数（既定2） */
   maxParticipants?: number;
+  /**
+   * STT ストリーム生成関数（省略時は `GCP_MODE` 環境変数で解決。
+   * `GCP_MODE=mock` のときは E2E 用モック、それ以外は実 GCP 実装）。
+   */
+  createSpeechStream?: CreateSpeechStreamFn;
+  /**
+   * 翻訳関数（省略時は `GCP_MODE` 環境変数で解決。
+   * `GCP_MODE=mock` のときは E2E 用モック、それ以外は実 GCP 実装）。
+   */
+  translate?: MessageRouterDeps["translate"];
+  /**
+   * 音声合成関数（省略時は `GCP_MODE` 環境変数で解決。
+   * `GCP_MODE=mock` のときは E2E 用モック、それ以外は実 GCP 実装）。
+   */
+  synthesize?: MessageRouterDeps["synthesize"];
+}
+
+/** `GCP_MODE=mock` のとき true（E2E テスト用の決定的モックで動作させる）。 */
+function isMockGcpMode(): boolean {
+  return process.env.GCP_MODE === "mock";
 }
 
 /** `Session` から `messageRouter.ts` の `RoutingParticipant` へ変換する */
@@ -37,7 +62,12 @@ function toRoutingParticipant(session: Session): RoutingParticipant {
  * 発話区切り確定時の翻訳・配信ルーティングを実行する。
  * ルームが既に存在しない（例: 話者以外全員退室済み）場合は何もしない。
  */
-function routeCommittedUtterance(room: Room, speakerSession: Session, text: string): void {
+function routeCommittedUtterance(
+  room: Room,
+  speakerSession: Session,
+  text: string,
+  deps: MessageRouterDeps,
+): void {
   const listeners = Array.from(room.participants.values())
     .filter((s) => s.participantId !== speakerSession.participantId)
     .map(toRoutingParticipant);
@@ -52,10 +82,7 @@ function routeCommittedUtterance(room: Room, speakerSession: Session, text: stri
       sourceLanguage: speakerSession.language,
       text,
     },
-    {
-      translate: translateText,
-      synthesize: synthesizeSpeechToBase64,
-    },
+    deps,
   ).catch((err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[WS Server] routeUtterance failed unexpectedly:", message);
@@ -71,6 +98,11 @@ function routeCommittedUtterance(room: Room, speakerSession: Session, text: stri
  * start（STTストリーム開始・発話バッファ初期化）→ audio（STT書き込み）→
  * 発話区切り確定（翻訳・配信ルーティング）→ commit/stop、までを扱う
  * （docs/design/server-design.md「セッションライフサイクル」参照）。
+ *
+ * GCP 呼び出し（STT/翻訳/TTS）は `options` で明示指定しない限り、
+ * 環境変数 `GCP_MODE=mock` のときは E2E テスト用の決定的モック
+ * （`server/gcp/mockGcp.ts`）に切り替わる。**本番では `GCP_MODE` を
+ * 設定しない（未設定時は実 GCP 実装を使用する）。**
  */
 export function startServer(
   port: number = WS_PORT,
@@ -80,11 +112,28 @@ export function startServer(
   const wss = new WebSocketServer({ port, host });
   const roomManager = new RoomManager({ maxParticipants: options.maxParticipants });
   const verifyJoin = options.verifyJoin ?? defaultVerifyJoin;
+  const mockMode = isMockGcpMode();
+
+  // 非モック時かつ未指定の場合は undefined のまま渡す
+  // （Session 側の既定である実 GCP 実装 `createSpeechStream` に委ねる）
+  const createStream: CreateSpeechStreamFn | undefined =
+    options.createSpeechStream ?? (mockMode ? createMockSpeechStream : undefined);
+  const translate: MessageRouterDeps["translate"] =
+    options.translate ?? (mockMode ? mockTranslateText : translateText);
+  const synthesize: MessageRouterDeps["synthesize"] =
+    options.synthesize ?? (mockMode ? mockSynthesizeSpeechToBase64 : synthesizeSpeechToBase64);
+  const routerDeps: MessageRouterDeps = { translate, synthesize };
 
   wss.on("listening", () => {
     console.log(
       `[WS Server] Listening on ws://${host}:${port} (shared: ${SHARED_PLACEHOLDER})`,
     );
+    if (mockMode) {
+      console.log(
+        "[WS Server] GCP_MODE=mock: using deterministic mock STT/Translation/TTS " +
+          "(server/gcp/mockGcp.ts). Do NOT use this in production.",
+      );
+    }
   });
 
   wss.on("connection", (ws: WebSocket) => {
@@ -191,6 +240,7 @@ export function startServer(
 
         case "start": {
           session.startRecording(message, {
+            createSpeechStream: createStream,
             onUtteranceCommitted: (utteranceText) => {
               if (!roomId || !session) {
                 return;
@@ -199,7 +249,7 @@ export function startServer(
               if (!room) {
                 return;
               }
-              routeCommittedUtterance(room, session, utteranceText);
+              routeCommittedUtterance(room, session, utteranceText, routerDeps);
             },
           });
           return;

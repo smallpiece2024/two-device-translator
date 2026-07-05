@@ -200,3 +200,12 @@ const base64 = Buffer.from(response.audioContent).toString("base64");
 ## テスト方針（GCP連携）
 
 実APIには接続しない。`speechStream.ts` / `translate.ts` / `textToSpeech.ts` をモック化して結合テスト。ラッパーの入出力（言語コード変換、base64 化、`isFinal` 分岐、言語検出時の `alternativeLanguageCodes` 付与）は単体テストで検証する（[server-design.md](./server-design.md#テスト方針概要) 参照）。
+
+### E2E用モックモード（bd-713 で追加）
+
+Playwright E2E ではサーバーを環境変数 `GCP_MODE=mock` で起動し、STT/翻訳/TTS を `server/gcp/mockGcp.ts` の決定的モックに切り替える（実GCPパッケージをランタイムで一切読み込まない）。
+
+- 切替の解決順: `startServer` の明示オプション（`createSpeechStream` / `translate` / `synthesize`）＞ `GCP_MODE === "mock"` ＞ 既定（実GCP実装）。`"mock"` の厳密一致のみ有効で、未設定・他の値では実GCP経路は完全に不変。mock 時は起動ログに明示する（本番誤設定の検出用）。
+- モックSTT: 音声チャンク `write` の2回目で interim、4回目で final を1回だけ発火（`ja-JP` → 「こんにちは、これはテストです」、`en-US` → "Hello, this is a test"）。以降は無音タイマーによる発話確定に委ねる。
+- モック翻訳: `[{targetLanguage}] {text}` 形式（target はプロトコルコード、例 `[en-US]`）。モックTTS: 固定の極小無音MP3 base64（`ENABLE_TTS=false` で null）。
+- E2E の実行方法・webServer 構成は [infra-design.md](./infra-design.md#e2e-テスト構成bd-713-で実装) 参照。
