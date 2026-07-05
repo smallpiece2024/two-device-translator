@@ -153,7 +153,7 @@ interface RoomState {
 | アクション | 契機（WS受信 or 操作） |
 |---|---|
 | `STATUS_CHANGED` | 接続状態変化 |
-| `JOINED` | `joined` → participants/selfParticipantId 設定 |
+| `JOINED` | `joined` → participants/selfParticipantId 設定。`recentMessages` が非空のときのみ messages を置き換え、空のときは既存 messages を維持（bd-652 で追加） |
 | `PARTICIPANT_JOINED/LEFT/UPDATED` | 参加者イベント |
 | `INTERIM` | `transcript_interim` → interim 置換（自分のみ） |
 | `MESSAGE` | `message` → messages に追加、interim クリア |
@@ -162,9 +162,10 @@ interface RoomState {
 | `SUMMARY` | `summary` → summary 設定 |
 | `ROOM_ENDED` | `room_ended` → roomEnded=true |
 | `ERROR` | `error` → error（fatal なら status=error） |
-| `RESET` | 切断・再接続 |
+| `RESET` | 切断・再接続。**messages は維持**し、それ以外（interim/error/participants 等）を初期化（bd-652 で追加） |
 
 - `transcript_final` / `utterance_committed` は自分の原文フィードバック（interim 更新の補助）。UI は主に `message` でバブル化するため、これらは軽く扱う（interim 表示の確定に使う）。
+- **再接続をまたぐタイムライン保持（bd-652 で追加）**: Phase1 のサーバーは会話履歴を永続化せず、再接続時の `joined.recentMessages` は常に空配列で返る。クライアントが保持する `messages` が会話の唯一の記録であるため、`RESET`（再接続開始）と `JOINED`（再join完了）のいずれでも messages を空で上書きしない。Phase2 でサーバー履歴復元が入った場合は、`recentMessages` 非空時に置き換える既存分岐がそのまま復元経路になる。
 
 ---
 

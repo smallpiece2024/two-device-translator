@@ -94,12 +94,19 @@ export function roomReducer(state: RoomState, action: RoomAction): RoomState {
       return { ...state, status: action.status };
 
     case "JOINED":
+      // Phase1のサーバーは会話履歴を保持しないため、再接続時の recentMessages は
+      // 常に空配列で返る。空配列で無条件に上書きすると再接続の度にクライアント側の
+      // タイムラインが消えてしまうため、非空の場合のみ recentMessages で置き換え、
+      // 空のときはクライアントが保持している messages をそのまま維持する。
       return {
         ...state,
         status: "joined",
         selfParticipantId: action.participantId,
         participants: action.participants,
-        messages: action.recentMessages.map(toMessageView),
+        messages:
+          action.recentMessages.length > 0
+            ? action.recentMessages.map(toMessageView)
+            : state.messages,
         roomEnded: action.room.status === "ended",
         error: null,
       };
@@ -157,7 +164,10 @@ export function roomReducer(state: RoomState, action: RoomAction): RoomState {
       };
 
     case "RESET":
-      return { ...initialRoomState, status: "connecting" };
+      // Phase1のサーバーは会話履歴を保持しないため、再接続時にクライアント保持分の
+      // messages を消してしまうと会話の唯一の記録が失われる。接続状態・エラー・
+      // 参加者情報など再接続で作り直されるべき項目のみ初期化し、messages は維持する。
+      return { ...initialRoomState, status: "connecting", messages: state.messages };
 
     default:
       return state;
