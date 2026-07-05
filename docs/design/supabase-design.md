@@ -77,7 +77,7 @@ Next.js 側は用途別に3つのクライアント生成関数を用意する�
 - **GRANT（テーブルレベル権限）を RLS とセットで管理する（bd-882 で追加）**: Supabase CLI の新デフォルト（新規テーブルは Data API ロールへ自動公開されない）のため、RLS ポリシーだけではアクセスできず、migration 内で明示的な `GRANT` が必要（Postgres の仕様: GRANT＝テーブルレベル、RLS＝行レベルの二層で両方必要）。逆に GRANT はポリシーの範囲を超えて与えない（例: `participants` は authenticated へ select のみ GRANT。insert の GRANT なし＝ポリシーなしとの二重防御）。anon への書き込み GRANT・`to` 句省略（暗黙 PUBLIC）・`grant all` は禁止で、CI の静的ガード（`tests/unit/supabase/rls-policies.test.ts`）が全マイグレーション横断で検知する。
 - **履歴・要約の永続閲覧はオーナーのみ**（FR-9.3 / FR-11.3）。`messages` / `summaries` の select は「そのルームの `owner_user_id = auth.uid()`」に限定。ゲスト向けの永続 select ポリシーは作らない。
 - `messages` / `summaries` の insert は WSサーバーの service_role のみ（会話中の書き込み）。anon/authenticated には insert 権限を与えない。
-- `participants` の作成（ゲスト参加）は Route Handler `POST /api/invites/[token]` が service_role または SECURITY DEFINER 関数で行う（ゲストは Supabase セッションを持たないため）。
+- `participants` の作成（ゲスト参加）は Route Handler `POST /api/guest/join`（bd-jny で実装。エンドポイント名は当初案 `/api/invites/[token]` から変更、inviteToken はリクエストボディで受ける）が service_role で行う（ゲストは Supabase セッションを持たないため）。招待の有効性（存在・expires_at・room が active）は表示用の事前チェックとは別に Route Handler 内で再照合する（TOCTOU対策）。`gtt_guest` クッキーは httpOnly・sameSite=lax・maxAge=JWTのTTL（7日）で発行する。
 - `invites.token` による参照は Route Handler / Server Component から service_role 相当で行い、`token` 照合ロジックを匿名ロールに開放しない。
 
 ### 参照用サブクエリ例（方針）
@@ -105,7 +105,7 @@ create policy "owner reads own room messages" on messages
 QR読込 → /join/[token]
   Server Component: invites を token で照合（期限切れ/無効ならエラー画面）
     → 名前入力フォーム（Client Component）
-      → POST /api/invites/[token]（Route Handler, Node.js Runtime）
+      → POST /api/guest/join（Route Handler, Node.js Runtime。bd-jny で実装）
          1. token 再照合（期限・有効性）
          2. participants 行を作成（service_role）: role=guest, room_id, display_name, language=en-US
          3. ゲストJWT を発行: jose SignJWT { roomId, participantId, exp } / HS256 / GUEST_COOKIE_SECRET
@@ -131,7 +131,7 @@ service_role キーは **RLS をバイパス**するため、露出すると全�
 | 使用箇所 | 目的 |
 |---|---|
 | WSサーバー `server/db/supabaseAdmin.ts` | 確定発話の `messages` 書き込み、`summaries` 書き込み、`rooms.status`/`participants.present` 更新、`join` 時の token 検証（`auth.getUser`） |
-| Route Handler `POST /api/invites/[token]` | ゲスト `participants` 行作成（ゲストは SupBase セッションを持たないため） |
+| Route Handler `POST /api/guest/join` | ゲスト `participants` 行作成（ゲストは Supabase セッションを持たないため）。実装は `src/lib/supabase/admin.ts`（`import "server-only"` 必須。CIの静的ガードが担保） |
 
 - オーナー由来の通常操作（ルーム作成・一覧・履歴閲覧）は **service_role を使わず**、ユーザーセッション＋RLS で行う（最小権限）。
 - service_role の使用はコードレビューで棚卸しする（[security-design.md](./security-design.md#脆弱性対策owasp準拠の要点) 参照）。

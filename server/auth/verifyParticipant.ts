@@ -113,11 +113,19 @@ async function verifyOwnerJoin(join: JoinMessage): Promise<ParticipantIdentity |
  * - `verifyGuestToken` で署名・期限を検証（不正・期限切れは null）。
  * - payload の `roomId` が join 先の `roomId` と一致することを確認する
  *   （他ルーム向けに発行されたトークンでの join を拒否する）。
+ * - DB の `participants` 行が `id=payload.participantId AND room_id=payload.roomId
+ *   AND role='guest'` で実在することを確認する（bd-jny の招待フロー実装により
+ *   `/api/guest/join` が参加確定時に行を作成するようになったため、bd-0jy 時点の
+ *   繰り延べ事項に対応）。行が無い場合はトークンの署名・roomId が正しくても
+ *   認証失敗として扱う（招待取消・行削除後の古いクッキーでの再参加を拒否する）。
  * - `participantId` は payload 由来の安定IDを用いる（再接続時の同一参加者復帰の土台）。
  *
- * DB の Participant 行の存在確認は、招待フロー（ゲスト参加時の行作成、
- * bd-jny）実装後に別タスクで追加する（現時点では participants 行を
- * 事前作成する経路が無いため、トークンの署名・roomId 整合のみで判定する）。
+ * `displayName`/`language` は DB 行ではなく join メッセージの値を採用する。
+ * これらは接続のたびにユーザーが変更しうる値（表示名編集・言語切替）であり、
+ * DB 側の値は `participant_updated` 配信時に別途更新される運用（
+ * docs/design/server-design.md「言語検出モード」参照）のため、ここでの
+ * DB チェックは「行の存在（＝有効な参加者であること）」の確認に限定し、
+ * identity の内容は join メッセージを正とする。
  */
 async function verifyGuestJoin(join: JoinMessage): Promise<ParticipantIdentity | null> {
   const payload = await verifyGuestToken(join.token);
@@ -127,6 +135,28 @@ async function verifyGuestJoin(join: JoinMessage): Promise<ParticipantIdentity |
 
   if (payload.roomId !== join.roomId) {
     console.error("[verifyParticipant] guest join failed: roomId mismatch");
+    return null;
+  }
+
+  const supabase = getSupabaseAdminClient();
+  const { data: participant, error: participantError } = await supabase
+    .from("participants")
+    .select("id")
+    .eq("id", payload.participantId)
+    .eq("room_id", payload.roomId)
+    .eq("role", "guest")
+    .maybeSingle<{ id: string }>();
+
+  if (participantError) {
+    console.error(
+      "[verifyParticipant] guest join failed: participants lookup error:",
+      participantError.message,
+    );
+    return null;
+  }
+
+  if (!participant) {
+    console.error("[verifyParticipant] guest join failed: participant row not found");
     return null;
   }
 

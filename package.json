@@ -23,8 +23,10 @@
     "@supabase/supabase-js": "^2.110.0",
     "jose": "^5.10.0",
     "next": "^15.3.4",
+    "qrcode.react": "^4.2.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
+    "server-only": "^0.0.1",
     "ws": "^8.18.2",
     "zod": "^3.25.67"
   },

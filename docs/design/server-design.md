@@ -140,7 +140,7 @@ interface ParticipantRuntime {
 - **`AUTH_MODE=insecure`（E2E・開発専用の互換モード）**: ログインUI（bd-63d）・招待フロー（bd-jny）実装前の移行措置として、環境変数 `AUTH_MODE` が `"insecure"`（厳密一致）のときのみ token 検証をスキップする。既定は strict（本検証）。有効時は起動ログに警告を明示し、本番では絶対に設定しない。Playwright E2E はこのモードでWSサーバーを起動する。
 - **非同期検証と切断の競合対策（幽霊参加者ガード）**: `verifyJoin` の await 中にクライアントが切断すると close イベントが session=null のまま先に発火するため、検証成功後・`RoomManager.join` 直前に `ws.readyState` を確認し、閉じていれば登録しない（登録すると除去経路がなく `maxParticipants` 枠を永久占有する）。回帰テストあり（`tests/integration/room-join-auth.test.ts`）。
 - 検証中に追加の `join` が届いた場合は `error`（`fatal:false`）で拒否する（`joinInProgress` ガード）。
-- **後続タスクへの繰り延べ（コード内コメントにも明記）**: (1) guest の「DB の Participant 行が存在すること」の確認は招待フロー（bd-jny、行を事前作成する経路）実装時に追加する。(2) owner の `participantId` の安定ID化（現状は接続ごとに `randomUUID()`）はルーム作成フロー実装後に対応する。
+- **後続タスクへの繰り延べの解消状況**: (1) guest の「DB の Participant 行が存在すること」の確認は **bd-jny で実装済み**（`participants` を `id`+`room_id`+`role='guest'` で照合、行なし/エラーは fail-closed）。(2) owner の `participantId` の安定ID化（現状は接続ごとに `randomUUID()`）は **bd-e3p の必須スコープ**（WS join 時に room_id+user_id で participants 行を upsert し、DB行IDを participantId とする）。
 
 ---
 

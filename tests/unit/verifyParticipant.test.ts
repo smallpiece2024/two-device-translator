@@ -21,12 +21,14 @@ import type { JoinMessage } from "../../shared/index";
 
 /**
  * supabaseAdmin モッククライアントを構築する。
- * `auth.getUser(token)` と `from("rooms").select().eq().single()` の
- * チェーンをモックする。
+ * `auth.getUser(token)` と `from("rooms").select().eq().single()`、
+ * `from("participants").select().eq().eq().eq().maybeSingle()` の
+ * チェーンをモックする（テーブル名に応じて分岐する）。
  */
 function makeMockSupabaseClient(options: {
   getUserResult?: { data: { user: { id: string } | null }; error: { message: string } | null };
   roomResult?: { data: { owner_user_id: string } | null; error: { message: string } | null };
+  participantResult?: { data: { id: string } | null; error: { message: string } | null };
 }) {
   const getUserResult = options.getUserResult ?? {
     data: { user: null },
@@ -36,20 +38,43 @@ function makeMockSupabaseClient(options: {
     data: null,
     error: { message: "not configured" },
   };
+  const participantResult = options.participantResult ?? {
+    data: { id: "guest-xyz" },
+    error: null,
+  };
 
-  const single = jest.fn().mockResolvedValue(roomResult);
-  const eq = jest.fn().mockReturnValue({ single });
-  const select = jest.fn().mockReturnValue({ eq });
-  const from = jest.fn().mockReturnValue({ select });
+  // rooms チェーン: from("rooms").select().eq().single()
+  const roomsSingle = jest.fn().mockResolvedValue(roomResult);
+  const roomsEq = jest.fn().mockReturnValue({ single: roomsSingle });
+  const roomsSelect = jest.fn().mockReturnValue({ eq: roomsEq });
+
+  // participants チェーン: from("participants").select().eq().eq().eq().maybeSingle()
+  const participantsMaybeSingle = jest.fn().mockResolvedValue(participantResult);
+  const participantsEq3 = jest.fn().mockReturnValue({ maybeSingle: participantsMaybeSingle });
+  const participantsEq2 = jest.fn().mockReturnValue({ eq: participantsEq3 });
+  const participantsEq1 = jest.fn().mockReturnValue({ eq: participantsEq2 });
+  const participantsSelect = jest.fn().mockReturnValue({ eq: participantsEq1 });
+
+  const from = jest.fn((table: string) => {
+    if (table === "participants") {
+      return { select: participantsSelect };
+    }
+    return { select: roomsSelect };
+  });
   const getUser = jest.fn().mockResolvedValue(getUserResult);
 
   return {
     client: { auth: { getUser }, from } as never,
     getUser,
     from,
-    select,
-    eq,
-    single,
+    select: roomsSelect,
+    eq: roomsEq,
+    single: roomsSingle,
+    participantsSelect,
+    participantsEq1,
+    participantsEq2,
+    participantsEq3,
+    participantsMaybeSingle,
   };
 }
 
@@ -178,7 +203,12 @@ describe("verifyParticipant", () => {
   // guest role
   // -------------------------------------------------------------------------
   describe("guest join", () => {
-    test("正常な署名済みトークン・roomId一致 → identityを返す（participantIdはpayload由来）", async () => {
+    test("正常な署名済みトークン・roomId一致＋participants行実在 → identityを返す（participantIdはpayload由来）", async () => {
+      const mock = makeMockSupabaseClient({
+        participantResult: { data: { id: "guest-xyz" }, error: null },
+      });
+      setSupabaseAdminClient(mock.client);
+
       const token = await signGuestToken({ roomId: "room-1", participantId: "guest-xyz" });
 
       const identity = await verifyJoin(
@@ -229,6 +259,46 @@ describe("verifyParticipant", () => {
       const identity = await verifyJoin(makeJoin({ role: "guest", roomId: "room-1", token }));
 
       expect(identity).toBeNull();
+    });
+
+    test("participants行が存在しない（maybeSingleがdata:null）→ null（招待取消・行削除後の古いクッキーでの再参加を拒否）", async () => {
+      const mock = makeMockSupabaseClient({
+        participantResult: { data: null, error: null },
+      });
+      setSupabaseAdminClient(mock.client);
+
+      const token = await signGuestToken({ roomId: "room-1", participantId: "guest-xyz" });
+      const identity = await verifyJoin(makeJoin({ role: "guest", roomId: "room-1", token }));
+
+      expect(identity).toBeNull();
+    });
+
+    test("participantsの照合クエリがエラーを返す → null", async () => {
+      const mock = makeMockSupabaseClient({
+        participantResult: { data: null, error: { message: "db error" } },
+      });
+      setSupabaseAdminClient(mock.client);
+
+      const token = await signGuestToken({ roomId: "room-1", participantId: "guest-xyz" });
+      const identity = await verifyJoin(makeJoin({ role: "guest", roomId: "room-1", token }));
+
+      expect(identity).toBeNull();
+    });
+
+    test("participants照合条件（id/room_id/roleの3つのeq）が正しい引数で呼ばれる", async () => {
+      const mock = makeMockSupabaseClient({
+        participantResult: { data: { id: "guest-xyz" }, error: null },
+      });
+      setSupabaseAdminClient(mock.client);
+
+      const token = await signGuestToken({ roomId: "room-1", participantId: "guest-xyz" });
+      await verifyJoin(makeJoin({ role: "guest", roomId: "room-1", token }));
+
+      expect(mock.from).toHaveBeenCalledWith("participants");
+      expect(mock.participantsSelect).toHaveBeenCalledWith("id");
+      expect(mock.participantsEq1).toHaveBeenCalledWith("id", "guest-xyz");
+      expect(mock.participantsEq2).toHaveBeenCalledWith("room_id", "room-1");
+      expect(mock.participantsEq3).toHaveBeenCalledWith("role", "guest");
     });
   });
 

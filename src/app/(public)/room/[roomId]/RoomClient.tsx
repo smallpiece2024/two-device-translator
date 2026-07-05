@@ -27,6 +27,13 @@ export interface RoomClientProps {
   role?: "owner" | "guest";
   displayName?: string;
   language?: SupportedLanguage;
+  /**
+   * ゲスト参加フロー（`POST /api/guest/join`）で発行された `gtt_guest`
+   * クッキーの値（JWT文字列）。指定があれば `join` メッセージの `token` に
+   * 使用し、無ければ Phase1 互換の仮トークンを発行する（既存動作を壊さない
+   * 最小変更、`docs/design/supabase-design.md#ゲストのクッキー識別との連携` 参照）。
+   */
+  guestToken?: string;
 }
 
 const MAX_RECONNECT_ATTEMPTS = 5;
@@ -47,6 +54,7 @@ export function RoomClient({
   role = "guest",
   displayName,
   language = "ja-JP",
+  guestToken,
 }: RoomClientProps) {
   const [state, dispatch] = useReducer(roomReducer, initialRoomState);
 
@@ -63,7 +71,10 @@ export function RoomClient({
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tokenRef = useRef<string | undefined>(undefined);
   if (tokenRef.current === undefined) {
-    tokenRef.current = createTemporaryToken();
+    // `guestToken`（`gtt_guest` クッキー由来）があればそれを正式なゲスト識別
+    // トークンとして使用する。無ければ Phase1 互換の仮トークンにフォールバック
+    // する（既存動作を壊さない最小変更）。
+    tokenRef.current = guestToken ?? createTemporaryToken();
   }
 
   // 音声再生キュー（TTS）。
