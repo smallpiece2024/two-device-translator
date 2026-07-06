@@ -14,8 +14,12 @@
  * オーナーとして join しようとして認証に失敗し行き詰まる穴があったため
  * （コードレビュー指摘事項）。表示名・言語の入力欄は引き続き残す。
  *
- * 認証は Phase1 ダミーのまま（`guestToken` が無い場合は `RoomClient` 内の
- * 仮トークン発行にフォールバックする）。
+ * `ownerToken`（Server Component がルーム所有者と判定した場合に渡される
+ * Supabase アクセストークン、bd-fmk）が存在する場合も同様に、役割セレクトを
+ * 表示せず role を `"owner"` に固定する。
+ *
+ * どちらのトークンも無い場合は Phase1 ダミー（`RoomClient` 内の仮トークン
+ * 発行）にフォールバックする（dev/E2E の `AUTH_MODE=insecure` 互換）。
  * ルームはサーバー側で初回join時に自動作成される（`server/room/roomManager.ts`）。
  */
 import { useId, useState, type FormEvent } from "react";
@@ -27,6 +31,11 @@ import styles from "./JoinForm.module.css";
 export interface JoinFormProps {
   roomId: string;
   wsUrl: string;
+  /**
+   * ルーム所有者のSupabaseアクセストークン（Server Component が所有者と
+   * 判定した場合のみ渡される。`RoomClient` へそのまま中継する）。
+   */
+  ownerToken?: string;
   /** `gtt_guest` クッキーがあれば渡される（`RoomClient` へそのまま中継する）。 */
   guestToken?: string;
 }
@@ -41,7 +50,7 @@ interface JoinConfig {
 
 const DEFAULT_LANGUAGE: SupportedLanguage = "ja-JP";
 
-export function JoinForm({ roomId, wsUrl, guestToken }: JoinFormProps) {
+export function JoinForm({ roomId, wsUrl, ownerToken, guestToken }: JoinFormProps) {
   const [config, setConfig] = useState<JoinConfig | null>(null);
   const [displayName, setDisplayName] = useState("");
   const [language, setLanguage] = useState<SupportedLanguage>(DEFAULT_LANGUAGE);
@@ -57,6 +66,7 @@ export function JoinForm({ roomId, wsUrl, guestToken }: JoinFormProps) {
         role={config.role}
         displayName={config.displayName || undefined}
         language={config.language}
+        ownerToken={ownerToken}
         guestToken={guestToken}
       />
     );
@@ -64,9 +74,12 @@ export function JoinForm({ roomId, wsUrl, guestToken }: JoinFormProps) {
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    // `guestToken` がある場合はUI上の選択肢を隠しているが、state改ざん等の
-    // 不測の経路を考慮し、送信時にも役割を "guest" に強制する多層防御。
-    setConfig({ displayName: displayName.trim(), language, role: guestToken ? "guest" : role });
+    // トークンがある場合はUI上の選択肢を隠しているが、state改ざん等の
+    // 不測の経路を考慮し、送信時にも役割をトークン種別に応じて強制する多層防御。
+    // ownerToken を guestToken より優先する（page.tsx は所有者判定時に
+    // guestToken を渡さないため通常は同時に存在しないが、防御的に扱う）。
+    const forcedRole: RoomRole = ownerToken ? "owner" : guestToken ? "guest" : role;
+    setConfig({ displayName: displayName.trim(), language, role: forcedRole });
   };
 
   return (
@@ -90,7 +103,7 @@ export function JoinForm({ roomId, wsUrl, guestToken }: JoinFormProps) {
 
       <LanguageSelector value={language} onChange={setLanguage} />
 
-      {!guestToken && (
+      {!ownerToken && !guestToken && (
         <div className={styles.field}>
           <label htmlFor={roleId} className={styles.label}>
             役割
