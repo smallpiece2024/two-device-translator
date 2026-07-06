@@ -11,7 +11,8 @@
  */
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { createRoomAction, initialCreateRoomState } from "@/app/(owner)/rooms/new/actions";
+import { createRoomAction } from "@/app/(owner)/rooms/new/actions";
+import { initialCreateRoomState } from "@/app/(owner)/rooms/new/state";
 
 jest.mock("next/navigation", () => ({
   redirect: jest.fn((path: string) => {
