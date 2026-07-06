@@ -43,6 +43,16 @@
 - 月額概算（東京、2026-07 時点）: e2-small 約 $15.7 + 使用中外部 IPv4 約 $2.9 + pd-balanced 20GB 約 $2 ≒ **合計約 $21/月**。e2 ファミリーは継続利用割引（SUD）の対象外（確約利用割引 CUD のみ。検証段階では契約しない）。
 - **`next build` を VM 上で実行する場合の注意**: ビルドはピークで 1GB 超のメモリを使うため、e2-small では swap（2GB 以上）を設定するか、CI / ローカルでビルドした成果物（`.next/standalone` / `dist-server/`）を転送する方式を優先する（構築タスク bd-bg3 で確定）。
 
+### IaC（Terraform）によるプロビジョニング（2026-07-06 決定）
+
+GCP リソースは **Terraform**（公式 `google` プロバイダ）で定義・構築する（手作業の gcloud / コンソール操作を構成の正とはしない）。
+
+- 配置: リポジトリの `infra/terraform/` 配下（bd-bg3 で作成）。
+- 管理対象: GCE VM（マシンタイプ・ブートディスク）、静的外部 IPv4、ファイアウォールルール（80/443 のみ開放、SSH は IAP または送信元制限）、サービスアカウントと IAM ロール（STT / Translation / TTS の利用ロール、最小権限）、必要 API の有効化。
+- state 管理: 当面はローカル state で開始し、運用が固まったら GCS バックエンドへ移行を検討（単一運用者のため当面は衝突リスクなし）。state ファイルはコミットしない（`.gitignore` に `*.tfstate*` を追加）。
+- **Supabase は Terraform の管理対象外**: スキーマ・RLS・トリガーは既に `supabase/migrations/`（Supabase CLI）でコード管理されており、これが Supabase 公式の標準 IaC。Terraform プロバイダはプロジェクト設定の一部しかカバーせず、二重管理の利益がないため採用しない。プロジェクト作成は一度きりのコンソール操作とする。
+- VM 内部のセットアップ（Node.js / pm2 / Caddy の導入・設定）は Terraform の守備範囲外とし、起動スクリプト（`metadata_startup_script`）またはセットアップ手順書（bd-bg3 で作成）で扱う。
+
 ---
 
 ## ビルドと出力
