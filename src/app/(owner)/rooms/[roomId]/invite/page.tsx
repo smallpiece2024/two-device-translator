@@ -34,6 +34,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { QRDisplay } from "@/components/QRDisplay/QRDisplay";
+import { CloseTabButton } from "./CloseTabButton";
 import { resolveInviteBaseUrl } from "./resolveInviteBaseUrl";
 import styles from "./page.module.css";
 
@@ -42,10 +43,19 @@ const INVITE_TTL_HOURS = 24;
 
 interface InvitePageProps {
   params: Promise<{ roomId: string }>;
+  /**
+   * `from=room` はルーム画面の「招待QRを表示」（新しいタブ）から開かれた
+   * ことを示す。この場合「入室する」リンクの代わりに「このタブを閉じる」
+   * ボタンを表示する（入室リンクを押すと同一participantIdの再joinで元タブの
+   * WSが切断され二重ウィンドウになるため。bd-5a2）。
+   */
+  searchParams?: Promise<{ from?: string }>;
 }
 
-export default async function InvitePage({ params }: InvitePageProps) {
+export default async function InvitePage({ params, searchParams }: InvitePageProps) {
   const { roomId } = await params;
+  const { from } = (await searchParams) ?? {};
+  const openedFromRoom = from === "room";
   const supabase = await createClient();
 
   const {
@@ -134,9 +144,13 @@ export default async function InvitePage({ params }: InvitePageProps) {
         このQRコードまたはURLを相手に共有すると、ルームに参加できます。
       </p>
       <QRDisplay inviteUrl={inviteUrl} expiresAt={expiresAt} />
-      <Link href={`/room/${roomId}`} className={styles.backLink}>
-        ルームへ戻る
-      </Link>
+      {openedFromRoom ? (
+        <CloseTabButton />
+      ) : (
+        <Link href={`/room/${roomId}`} className={styles.backLink}>
+          ルームへ戻る
+        </Link>
+      )}
     </main>
   );
 }

@@ -239,6 +239,48 @@ describe("InvitePage", () => {
     );
   });
 
+  it("通常アクセス時は「ルームへ戻る」リンクが表示され、閉じるボタンは表示されない", async () => {
+    const futureIso = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    setupSupabaseMock({
+      roomsResult: { data: { id: "room-1", status: "active" }, error: null },
+      existingInviteResult: {
+        data: { token: "tok-nav", expires_at: futureIso },
+        error: null,
+      },
+    });
+
+    const result = await InvitePage({ params: Promise.resolve({ roomId: "room-1" }) });
+    render(result);
+
+    expect(screen.getByRole("link", { name: "ルームへ戻る" })).toHaveAttribute(
+      "href",
+      "/room/room-1",
+    );
+    expect(
+      screen.queryByRole("button", { name: "このタブを閉じる" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("from=roomで開かれた場合は「このタブを閉じる」ボタンが表示され、入室リンクは表示されない（bd-5a2）", async () => {
+    const futureIso = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    setupSupabaseMock({
+      roomsResult: { data: { id: "room-1", status: "active" }, error: null },
+      existingInviteResult: {
+        data: { token: "tok-from-room", expires_at: futureIso },
+        error: null,
+      },
+    });
+
+    const result = await InvitePage({
+      params: Promise.resolve({ roomId: "room-1" }),
+      searchParams: Promise.resolve({ from: "room" }),
+    });
+    render(result);
+
+    expect(screen.getByRole("button", { name: "このタブを閉じる" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "ルームへ戻る" })).not.toBeInTheDocument();
+  });
+
   it("inviteUrlはAPP_BASE_URLとtokenから`<base>/join/<token>`の形で組み立てられる", async () => {
     process.env.APP_BASE_URL = "https://custom.example.com";
     const futureIso = new Date(Date.now() + 60 * 60 * 1000).toISOString();
