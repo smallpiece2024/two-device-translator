@@ -10,7 +10,8 @@
  */
 import { useActionState } from "react";
 import Link from "next/link";
-import { createRoomAction, initialCreateRoomState } from "./actions";
+import { createRoomAction } from "./actions";
+import { initialCreateRoomState } from "./state";
 import styles from "./CreateRoomForm.module.css";
 
 export function CreateRoomForm() {

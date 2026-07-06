@@ -163,6 +163,7 @@ two-device-translator/
 | `/history` 系 | Server Component | Supabase Server Client でページング取得 |
 
 - Supabase 統合は `@supabase/ssr`。server/client/middleware 用に3つのクライアント生成関数を用意（[supabase-design.md](./supabase-design.md#クライアント生成) 参照）。
+- **`"use server"` ファイル（Server Action）は async 関数以外を export しない**（bd-2el）。Next.js の**本番ランタイムのみ**がこの制約を強制するため（dev / `next build` / Jest では検出されない）、オブジェクト定数や型初期値を export すると本番でのみモジュール読込時にページ全体がクラッシュする。`useActionState` の初期値・状態型は別モジュール（例: `state.ts`）に分離する。静的ガード: `tests/unit/use-server-exports.test.ts`。
 - トークルーム画面は「Server Component でガード＋最小限 props を渡し、あとは1枚の Client Component（`RoomClient`）に閉じ込める」構成。プロトタイプの `TranslatorApp.tsx`（reducer駆動）を拡張する（[frontend-design.md](./frontend-design.md#roomclient最上位-client-component) 参照）。
 - トークルーム画面が Client へ渡す最小 props: `roomId, participantId, role(owner|guest), selfLanguage, wsUrl, wsAuth(token)`。認可判定ロジックはクライアントに持たせない。
 

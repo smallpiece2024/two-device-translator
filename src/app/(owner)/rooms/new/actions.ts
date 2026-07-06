@@ -21,12 +21,9 @@
  */
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-
-export interface CreateRoomState {
-  error: string | null;
-}
-
-export const initialCreateRoomState: CreateRoomState = { error: null };
+// 状態型・初期値は state.ts に分離している。"use server" ファイルは
+// async 関数以外を export できない（本番ランタイム制約、bd-2el）。
+import type { CreateRoomState } from "./state";
 
 /** `plans` にも `user_profiles` にも該当行が見つからない場合のフォールバック上限。 */
 const FALLBACK_MAX_PARTICIPANTS = 2;
