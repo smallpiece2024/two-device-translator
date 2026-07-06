@@ -121,9 +121,19 @@ module.exports = {
 | `LLM_MODEL` | web/ws | 不可 | 既定モデル（省略可） |
 | `NEXT_PUBLIC_WS_URL` | web(client) | 可 | WS接続先（例 `wss://{domain}/ws`） |
 | `APP_DOMAIN` | Caddy | - | 公開ドメイン |
+| `SUPABASE_ACCESS_TOKEN` | Supabase CLI（開発者ローカルのみ） | 不可 | Supabase CLI 実行用トークン。下記「環境変数の管理方針」参照。本番VMには置かない |
 
 - **`NEXT_PUBLIC_` を付けてよいのはブラウザに見えても問題ない値のみ**（Supabase URL/anon、WS URL）。GCP/LLM/service_role/ゲスト署名鍵には絶対に付けない（[security-design.md](./security-design.md#環境変数と認証情報の扱い) 参照）。
 - `GUEST_COOKIE_SECRET` は Next.js と WSサーバーで**同一値**を共有する（同じ JWT を両者が検証、[supabase-design.md](./supabase-design.md#ゲストのクッキー識別との連携) 参照）。
+
+### 環境変数の管理方針（bd-7sg）
+
+開発端末は複数プロジェクト共用のため、**マシン全体の環境変数（`setx` やOSのシステム環境変数）には環境変数を置かない**。プロジェクト直下の `.env`（`.gitignore` 済み、コミットしない）に集約する。
+
+- **Next.js（web）**: `next dev` / `next start` が `.env` を自動読込する（Next.js標準機能）。追加設定は不要。
+- **WSサーバー（ws）**: 開発時は `dev:ws`（`tsx --watch --env-file-if-exists=.env server/index.ts`）が Node.js の `--env-file-if-exists` で `.env` を読み込む。本番は `pm2` の `env_file`、または `systemd` の `EnvironmentFile=` で同じ `.env` を読み込む（下記「プロセス管理（pm2）」参照）。
+- **Supabase CLI**: `npm run sb -- <subcommand>`（例: `npm run sb -- projects list`）経由で実行する。`sb` スクリプトは `dotenv -o -e .env -- npx supabase` で、プロジェクトの `SUPABASE_ACCESS_TOKEN` を **override（`-o`）** 付きで注入する。これにより、マシンに残留した `supabase login` の共有トークン（誤アカウント接続の原因になった）よりも `.env` の値が必ず優先される。`supabase` CLI 自体は devDependency に追加せず `npx` のキャッシュに委ねる（バイナリが大きく CI が遅くなるため）。
+- **GCE 本番**: `.env` をアプリディレクトリ（VM上、コミットしない）に配置し、`pm2` の `env_file` オプションまたは `systemd` の `EnvironmentFile=` で読み込む。`SUPABASE_ACCESS_TOKEN`（Supabase CLI 管理用のトークン）は実行時に不要なため**本番VMには置かない**。GCP認証は VM にアタッチしたサービスアカウント（ADC、メタデータサーバー経由）を使うため環境変数は不要。
 
 ---
 
@@ -155,7 +165,9 @@ module.exports = {
 | `typecheck:server` | `tsc --noEmit -p tsconfig.server.json`（server + shared） |
 | `test` | `jest --passWithNoTests` |
 | `build` | `next build`（standalone）。WS ビルドは別途 `build:server`（`tsc -p tsconfig.server.json`） |
-| `dev` | `concurrently` で `next dev` と `tsx --watch server/index.ts`（プロトタイプ踏襲） |
+| `dev` | `concurrently` で `next dev` と `dev:ws`（プロトタイプ踏襲） |
+| `dev:ws` | `tsx --watch --env-file-if-exists=.env server/index.ts`（`.env` からWSサーバーの環境変数を読込、bd-7sg） |
+| `sb` | `dotenv -o -e .env -- npx supabase`。`npm run sb -- <subcommand>` で Supabase CLI を `.env` の `SUPABASE_ACCESS_TOKEN` で実行（bd-7sg） |
 
 ---
 
