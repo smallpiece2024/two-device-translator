@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "concurrently \"npm run dev:web\" \"npm run dev:ws\"",
     "dev:web": "next dev",
-    "dev:ws": "tsx --watch server/index.ts",
+    "dev:ws": "tsx --watch --env-file-if-exists=.env server/index.ts",
     "build": "next build",
     "build:server": "tsc -p tsconfig.server.json",
     "start": "next start",
@@ -13,7 +13,8 @@
     "typecheck": "tsc --noEmit",
     "typecheck:server": "tsc --noEmit -p tsconfig.server.json",
     "test": "jest --passWithNoTests",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "sb": "dotenv -o -e .env -- npx supabase"
   },
   "dependencies": {
     "@google-cloud/speech": "^7.5.0",
@@ -42,6 +43,7 @@
     "@types/react-dom": "^19.1.5",
     "@types/ws": "^8.5.14",
     "concurrently": "^9.1.2",
+    "dotenv-cli": "^11.0.0",
     "eslint": "^9.28.0",
     "eslint-config-next": "^15.3.4",
     "identity-obj-proxy": "^3.0.0",
