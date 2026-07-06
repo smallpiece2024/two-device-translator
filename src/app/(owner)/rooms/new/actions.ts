@@ -93,8 +93,8 @@ export async function createRoomAction(
     };
   }
 
-  // 作成後はQR招待ページへ遷移する（QRでゲストを招待→「入室する」で
-  // ルームへ、という要件FR-2の招待フローに沿った導線。bd での修正:
-  // 従来は /room/{id} へ直行しており、QRを表示する手段が無かった）。
-  redirect(`/rooms/${room.id}/invite`);
+  // 作成後はルームへ直行する（bd-hue、ユーザー要望）。QRはルーム画面内の
+  // 「招待QRを表示」からいつでも提示できる（bd-83x で一時的に招待ページ経由に
+  // していたが、入室後にQRを出す導線の方が自然なため戻した）。
+  redirect(`/room/${room.id}`);
 }

@@ -96,7 +96,7 @@ describe("createRoomAction", () => {
 
     await expect(
       createRoomAction(initialCreateRoomState, new FormData())
-    ).rejects.toThrow("NEXT_REDIRECT:/rooms/room-123/invite");
+    ).rejects.toThrow("NEXT_REDIRECT:/room/room-123");
 
     expect(plansChain.eq).toHaveBeenCalledWith("id", "plan-pro");
     expect(roomsChain.insert).toHaveBeenCalledWith({
@@ -104,7 +104,7 @@ describe("createRoomAction", () => {
       status: "active",
       max_participants: 5,
     });
-    expect(redirectMock).toHaveBeenCalledWith("/rooms/room-123/invite");
+    expect(redirectMock).toHaveBeenCalledWith("/room/room-123");
   });
 
   it("未認証（getUserがuser:nullを返す）→ insertは呼ばれず、エラーを返す（redirectも未実行）", async () => {
@@ -160,7 +160,7 @@ describe("createRoomAction", () => {
 
     await expect(
       createRoomAction(initialCreateRoomState, new FormData())
-    ).rejects.toThrow("NEXT_REDIRECT:/rooms/room-999/invite");
+    ).rejects.toThrow("NEXT_REDIRECT:/room/room-999");
 
     expect(roomsChain.insert).toHaveBeenCalledWith({
       owner_user_id: "user-1",
