@@ -7,10 +7,11 @@
  * 本ファイルは Phase1（join / start / audio / commit / stop、および
  * joined / transcript_interim / transcript_final / utterance_committed /
  * message / audio / error）に加え、Phase2 の一部
- * （update_settings, participant_joined/left, request_end, room_ended）を
- * 定義する（bd-e3p で request_end / room_ended を追加）。Phase3 のメッセージ
- * （idle_hint, summary 等）は将来追加する。`z.discriminatedUnion` は配列へ
- * スキーマを追加するだけで拡張できるため、追加を阻害しない設計になっている。
+ * （update_settings, participant_joined/left, request_end, room_ended,
+ * participant_updated）を定義する（bd-e3p で request_end / room_ended を追加。
+ * bd-ecb で言語検出モード確定通知の participant_updated を追加）。Phase3 の
+ * メッセージ（idle_hint, summary 等）は将来追加する。`z.discriminatedUnion` は
+ * 配列へスキーマを追加するだけで拡張できるため、追加を阻害しない設計になっている。
  *
  * 依存は zod のみ（shared/ の制約）。
  */
@@ -186,6 +187,19 @@ export const participantLeftSchema = z.object({
   reason: participantLeftReasonSchema.optional(),
 });
 
+/**
+ * 参加者の設定変更イベント（bd-ecb で言語検出モード確定通知として追加）。
+ * 現時点では言語検出モード（FR-4.3・D-9）が最初の final で話者言語を確定した際に、
+ * 全参加者（本人含む）へ配信する。`displayName` は変更がない場合も含めて
+ * 常に現在値を載せる（websocket-protocol.md「参加者イベント」参照）。
+ */
+export const participantUpdatedSchema = z.object({
+  type: z.literal("participant_updated"),
+  participantId: z.string().min(1),
+  displayName: z.string().max(50).optional(),
+  language: LanguageEnum,
+});
+
 /** エラー通知。`fatal:true` の場合は接続終了 */
 export const errorSchema = z.object({
   type: z.literal("error"),
@@ -214,6 +228,7 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
   audioServerSchema,
   participantJoinedSchema,
   participantLeftSchema,
+  participantUpdatedSchema,
   errorSchema,
   roomEndedSchema,
 ]);

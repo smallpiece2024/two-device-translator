@@ -24,6 +24,7 @@ import type {
   participantJoinedSchema,
   participantLeftReasonSchema,
   participantLeftSchema,
+  participantUpdatedSchema,
   errorSchema,
   roomEndedReasonSchema,
   roomEndedSchema,
@@ -57,6 +58,8 @@ export type ParticipantJoinedMessage = z.infer<typeof participantJoinedSchema>;
 /** 退室理由（bd-e3p）。`"disconnected"` | `"ended"` */
 export type ParticipantLeftReason = z.infer<typeof participantLeftReasonSchema>;
 export type ParticipantLeftMessage = z.infer<typeof participantLeftSchema>;
+/** 参加者の設定変更イベント（bd-ecb で言語検出モード確定通知として追加） */
+export type ParticipantUpdatedMessage = z.infer<typeof participantUpdatedSchema>;
 export type ErrorMessage = z.infer<typeof errorSchema>;
 /** ルーム終了理由（bd-e3p）。`"owner_ended"` | `"auto_timeout"` */
 export type RoomEndedReason = z.infer<typeof roomEndedReasonSchema>;

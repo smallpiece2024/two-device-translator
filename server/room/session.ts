@@ -31,6 +31,7 @@ import {
 } from "../gcp/speechStream";
 import { defaultSttCodeOf } from "../gcp/languageCodes";
 import type { SpeechStreamHandle } from "../gcp/types";
+import { alternativeSttCodes, LanguageDetector } from "./languageDetection";
 
 /** 参加者ロール（owner=ルーム作成者、guest=招待された相手） */
 export type ParticipantRole = "owner" | "guest";
@@ -63,6 +64,13 @@ export interface StartRecordingHooks {
   createSpeechStream?: CreateSpeechStreamFn;
   /** 言語コード（SupportedLanguage）→ STT languageCode の解決関数（省略時はレジストリ既定実装） */
   resolveSttCode?: (language: SupportedLanguage) => string;
+  /**
+   * 言語検出モード（FR-4.3・D-9）で最初の final から話者言語が確定した際に呼ばれる。
+   * 呼び出し側（`server/index.ts`）は `participant_updated` を配信する責務を持つ
+   * （docs/design/server-design.md「言語検出モード（FR-4.3・Phase2）」参照）。
+   * 通常モード（`config.detectLanguage=false`）では呼ばれない。
+   */
+  onLanguageDetected?: (language: SupportedLanguage) => void;
 }
 
 /**
@@ -83,6 +91,7 @@ export class Session {
   private ws: WebSocket;
   private utteranceBuffer: UtteranceBufferManager | null = null;
   private sttHandle: SpeechStreamHandle | null = null;
+  private languageDetector: LanguageDetector | null = null;
 
   constructor(identity: ParticipantIdentity, ws: WebSocket, options: SessionOptions = {}) {
     this.participantId = identity.participantId;
@@ -173,6 +182,9 @@ export class Session {
    * - `enableTts` を `start.enableTts`（聞き手としてTTSを受け取るか）で更新する
    * - 発話バッファ（`UtteranceBufferManager`）を初期化する
    * - STT ストリームを生成し、interim/final/error を発話バッファ・クライアント送信へ結線する
+   * - `config.detectLanguage=true` の場合、STT を複数言語候補（`alternativeLanguageCodes`）で
+   *   開始し、最初の final の判定言語で `language` を確定・以後固定する
+   *   （FR-4.3・D-9、docs/design/server-design.md「言語検出モード」参照）
    *
    * 既に録音中の場合は、既存のストリーム・バッファを破棄してから再生成する
    * （未確定分は破棄。通常フローでは `stop` を経ずに再度 `start` することは想定しないが、
@@ -200,13 +212,30 @@ export class Session {
     const resolveSttCode = hooks.resolveSttCode ?? defaultSttCodeOf;
     const createStream = hooks.createSpeechStream ?? createSpeechStream;
 
+    this.languageDetector = config.detectLanguage
+      ? new LanguageDetector(config.sourceLanguage)
+      : null;
+
     this.sttHandle = createStream({
       languageCode: resolveSttCode(config.sourceLanguage),
+      alternativeLanguageCodes: config.detectLanguage
+        ? alternativeSttCodes(config.sourceLanguage, resolveSttCode)
+        : undefined,
       onInterim: (text) => {
         this.send({ type: "transcript_interim", text });
         this.utteranceBuffer?.notifyInterim();
       },
-      onFinal: (text) => {
+      onFinal: (text, sttLanguageCode) => {
+        // 言語検出モード: 最初の final でのみ判定・確定する（以後固定）。
+        // 検出失敗（未対応言語・値なし）時は fail-safe で現在言語を維持する。
+        if (this.languageDetector) {
+          const detected = this.languageDetector.handleFinal(sttLanguageCode);
+          if (detected) {
+            this.language = detected;
+            hooks.onLanguageDetected?.(detected);
+          }
+        }
+
         // 空文字（またはtrim後空）の final はバッファに積む意味がなく、
         // クライアントへ送信しても表示上意味を持たないためスキップする。
         if (text.trim().length === 0) {
@@ -266,5 +295,6 @@ export class Session {
   private clearRecordingState(): void {
     this.utteranceBuffer = null;
     this.sttHandle = null;
+    this.languageDetector = null;
   }
 }

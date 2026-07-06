@@ -20,8 +20,10 @@ import type { StartMessage } from "@shared/index";
 function createFakeSpeechStreamFactory() {
   const instances: Array<{
     handle: SpeechStreamHandle;
+    languageCode: string;
+    alternativeLanguageCodes?: string[];
     onInterim: (text: string) => void;
-    onFinal: (text: string) => void;
+    onFinal: (text: string, languageCode?: string) => void;
     onError: (message: string, fatal: boolean) => void;
     write: jest.Mock;
     end: jest.Mock;
@@ -31,8 +33,9 @@ function createFakeSpeechStreamFactory() {
   const factory = jest.fn(
     (options: {
       languageCode: string;
+      alternativeLanguageCodes?: string[];
       onInterim: (text: string) => void;
-      onFinal: (text: string) => void;
+      onFinal: (text: string, languageCode?: string) => void;
       onError: (message: string, fatal: boolean) => void;
     }): SpeechStreamHandle => {
       const write = jest.fn();
@@ -41,6 +44,8 @@ function createFakeSpeechStreamFactory() {
       const handle: SpeechStreamHandle = { write, end, destroy };
       instances.push({
         handle,
+        languageCode: options.languageCode,
+        alternativeLanguageCodes: options.alternativeLanguageCodes,
         onInterim: options.onInterim,
         onFinal: options.onFinal,
         onError: options.onError,
@@ -376,5 +381,192 @@ describe("Session — attachSocket（再接続時のソケット差し替え）"
 
     expect(returned).toBe(oldWs);
     expect(session.present).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 言語検出モード（bd-ecb）— startRecording の detectLanguage 配線
+// ---------------------------------------------------------------------------
+describe("Session — startRecording（detectLanguage: 言語検出モードの配線）", () => {
+  test("detectLanguage:true のとき、createSpeechStream に alternativeLanguageCodes（現在言語以外の全対応言語）が渡る", () => {
+    const { session } = makeSession({ language: "ja-JP" });
+    const { factory, instances } = createFakeSpeechStreamFactory();
+
+    session.startRecording(
+      makeStartMessage({ sourceLanguage: "ja-JP", detectLanguage: true }),
+      {
+        onUtteranceCommitted: jest.fn(),
+        createSpeechStream: factory,
+      },
+    );
+
+    expect(instances[0].alternativeLanguageCodes).toEqual(["en-US"]);
+  });
+
+  test("detectLanguage:false（既定）のとき、createSpeechStream に alternativeLanguageCodes は渡らない（undefined）", () => {
+    const { session } = makeSession({ language: "ja-JP" });
+    const { factory, instances } = createFakeSpeechStreamFactory();
+
+    session.startRecording(makeStartMessage({ sourceLanguage: "ja-JP" }), {
+      onUtteranceCommitted: jest.fn(),
+      createSpeechStream: factory,
+    });
+
+    expect(instances[0].alternativeLanguageCodes).toBeUndefined();
+  });
+
+  test("detectLanguage:true で最初のfinalにlanguageCodeが含まれると、sessionのlanguageが更新されonLanguageDetectedが発火する", () => {
+    const { session } = makeSession({ language: "ja-JP" });
+    const { factory, instances } = createFakeSpeechStreamFactory();
+    const onLanguageDetected = jest.fn();
+
+    session.startRecording(
+      makeStartMessage({ sourceLanguage: "ja-JP", detectLanguage: true }),
+      {
+        onUtteranceCommitted: jest.fn(),
+        createSpeechStream: factory,
+        onLanguageDetected,
+      },
+    );
+
+    instances[0].onFinal("Hello", "en-US");
+
+    expect(session.language).toBe("en-US");
+    expect(onLanguageDetected).toHaveBeenCalledTimes(1);
+    expect(onLanguageDetected).toHaveBeenCalledWith("en-US");
+  });
+
+  test("detectLanguage:true で2回目以降のfinalは、異なるlanguageCodeが来ても再判定されない（言語は固定のまま・onLanguageDetectedは1回のみ）", () => {
+    const { session } = makeSession({ language: "ja-JP" });
+    const { factory, instances } = createFakeSpeechStreamFactory();
+    const onLanguageDetected = jest.fn();
+
+    session.startRecording(
+      makeStartMessage({ sourceLanguage: "ja-JP", detectLanguage: true }),
+      {
+        onUtteranceCommitted: jest.fn(),
+        createSpeechStream: factory,
+        onLanguageDetected,
+      },
+    );
+
+    instances[0].onFinal("Hello", "en-US");
+    // 2回目のfinal: 再度別の言語コード（ja-JP）が来ても再判定しない（既に en-US に固定済み）
+    instances[0].onFinal("こんにちは", "ja-JP");
+
+    expect(session.language).toBe("en-US");
+    expect(onLanguageDetected).toHaveBeenCalledTimes(1);
+  });
+
+  test("detectLanguage:true で最初のfinalのlanguageCodeが現在言語と同じ場合、languageは変わらずonLanguageDetectedも呼ばれない（session側 if(detected) ゲートの回帰ガード）", () => {
+    const { session } = makeSession({ language: "ja-JP" });
+    const { factory, instances } = createFakeSpeechStreamFactory();
+    const onLanguageDetected = jest.fn();
+
+    session.startRecording(
+      makeStartMessage({ sourceLanguage: "ja-JP", detectLanguage: true }),
+      {
+        onUtteranceCommitted: jest.fn(),
+        createSpeechStream: factory,
+        onLanguageDetected,
+      },
+    );
+
+    // 最初のfinalのlanguageCodeが現在言語（ja-JP）と同一 → LanguageDetector.handleFinal は
+    // null を返すため、Session側の `if (detected)` ゲートにより language 更新・
+    // onLanguageDetected 発火のどちらも起きないはず（実質的な変更なし）。
+    instances[0].onFinal("こんにちは", "ja-JP");
+
+    expect(session.language).toBe("ja-JP");
+    expect(onLanguageDetected).not.toHaveBeenCalled();
+  });
+
+  test("detectLanguage:true で空文字final（languageCode付き）が来た場合でも、検出・ロックは行われる（言語は更新されるが空文字自体はバッファ・送信されない、現仕様の明文化）", () => {
+    const { session, ws } = makeSession({ language: "ja-JP" });
+    const { factory, instances } = createFakeSpeechStreamFactory();
+    const onLanguageDetected = jest.fn();
+
+    session.startRecording(
+      makeStartMessage({ sourceLanguage: "ja-JP", detectLanguage: true }),
+      {
+        onUtteranceCommitted: jest.fn(),
+        createSpeechStream: factory,
+        onLanguageDetected,
+      },
+    );
+
+    // session.ts の実装順序: 言語検出（languageDetector.handleFinal）は
+    // 空文字チェックより先に行われるため、transcript が空文字であっても
+    // 最初のfinalとして検出・ロックされる（以後のfinalは再判定されない）。
+    instances[0].onFinal("", "en-US");
+
+    expect(session.language).toBe("en-US");
+    expect(onLanguageDetected).toHaveBeenCalledTimes(1);
+    expect(onLanguageDetected).toHaveBeenCalledWith("en-US");
+
+    // 空文字自体は（言語検出とは独立して）transcript_final送信・バッファ追加はされない
+    const sendMock = ws.send as jest.Mock;
+    const sentMessages = sendMock.mock.calls.map((c) => JSON.parse(c[0] as string));
+    expect(sentMessages).not.toContainEqual(
+      expect.objectContaining({ type: "transcript_final" }),
+    );
+
+    // ロック済みのため、2回目以降のfinalで別言語が来ても再判定されない
+    instances[0].onFinal("hello again", "en-US");
+    instances[0].onFinal("test", "ja-JP");
+    expect(session.language).toBe("en-US");
+    expect(onLanguageDetected).toHaveBeenCalledTimes(1);
+  });
+
+  test("detectLanguage:false のとき、finalにlanguageCodeが含まれてもlanguageは変わらずonLanguageDetectedも呼ばれない", () => {
+    const { session } = makeSession({ language: "ja-JP" });
+    const { factory, instances } = createFakeSpeechStreamFactory();
+    const onLanguageDetected = jest.fn();
+
+    session.startRecording(makeStartMessage({ sourceLanguage: "ja-JP" }), {
+      onUtteranceCommitted: jest.fn(),
+      createSpeechStream: factory,
+      onLanguageDetected,
+    });
+
+    instances[0].onFinal("Hello", "en-US");
+
+    expect(session.language).toBe("ja-JP");
+    expect(onLanguageDetected).not.toHaveBeenCalled();
+  });
+
+  test("再度startRecordingすると言語検出状態がリセットされ、新しいセッションで再度最初のfinalとして判定される", () => {
+    const { session } = makeSession({ language: "ja-JP" });
+    const { factory, instances } = createFakeSpeechStreamFactory();
+    const onLanguageDetected = jest.fn();
+
+    session.startRecording(
+      makeStartMessage({ sourceLanguage: "ja-JP", detectLanguage: true }),
+      {
+        onUtteranceCommitted: jest.fn(),
+        createSpeechStream: factory,
+        onLanguageDetected,
+      },
+    );
+    instances[0].onFinal("Hello", "en-US");
+    expect(session.language).toBe("en-US");
+
+    // 再start（stopを経ずに再度start。防御的仕様）: sourceLanguage を en-US に戻し、
+    // 新しい detector が生成され、以後のfinalが再び「最初のfinal」として扱われる
+    session.startRecording(
+      makeStartMessage({ sourceLanguage: "en-US", detectLanguage: true }),
+      {
+        onUtteranceCommitted: jest.fn(),
+        createSpeechStream: factory,
+        onLanguageDetected,
+      },
+    );
+
+    expect(factory).toHaveBeenCalledTimes(2);
+    instances[1].onFinal("こんにちは", "ja-JP");
+
+    expect(session.language).toBe("ja-JP");
+    expect(onLanguageDetected).toHaveBeenCalledTimes(2);
+    expect(onLanguageDetected).toHaveBeenLastCalledWith("ja-JP");
   });
 });

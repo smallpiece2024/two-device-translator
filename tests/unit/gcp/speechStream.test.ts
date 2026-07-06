@@ -103,6 +103,52 @@ describe("createSpeechStream() — streamingRecognize の設定", () => {
 });
 
 // ---------------------------------------------------------------------------
+// 1b. alternativeLanguageCodes（言語検出モード、bd-ecb）
+// ---------------------------------------------------------------------------
+describe("createSpeechStream() — alternativeLanguageCodes（言語検出モード）", () => {
+  test("alternativeLanguageCodes を指定すると config.alternativeLanguageCodes として渡る", () => {
+    const mockStream = createMockRecognizeStream();
+    const mockClient = createMockSpeechClient(mockStream);
+    const options = makeOptions({
+      languageCode: "ja-JP",
+      alternativeLanguageCodes: ["en-US"],
+    });
+
+    createSpeechStream(options, mockClient);
+
+    const callArg = (mockClient.streamingRecognize as jest.Mock).mock.calls[0][0];
+    expect(callArg.config.alternativeLanguageCodes).toEqual(["en-US"]);
+  });
+
+  test("alternativeLanguageCodes を指定しない場合、config に alternativeLanguageCodes キー自体が含まれない", () => {
+    const mockStream = createMockRecognizeStream();
+    const mockClient = createMockSpeechClient(mockStream);
+    const options = makeOptions({ languageCode: "ja-JP" });
+
+    createSpeechStream(options, mockClient);
+
+    const callArg = (mockClient.streamingRecognize as jest.Mock).mock.calls[0][0];
+    expect(callArg.config.alternativeLanguageCodes).toBeUndefined();
+    expect(Object.prototype.hasOwnProperty.call(callArg.config, "alternativeLanguageCodes")).toBe(
+      false,
+    );
+  });
+
+  test("alternativeLanguageCodes が空配列の場合、config に alternativeLanguageCodes キーは付与されない", () => {
+    const mockStream = createMockRecognizeStream();
+    const mockClient = createMockSpeechClient(mockStream);
+    const options = makeOptions({ languageCode: "ja-JP", alternativeLanguageCodes: [] });
+
+    createSpeechStream(options, mockClient);
+
+    const callArg = (mockClient.streamingRecognize as jest.Mock).mock.calls[0][0];
+    expect(
+      Object.prototype.hasOwnProperty.call(callArg.config, "alternativeLanguageCodes"),
+    ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 2. handle.write() — Buffer がストリームへ渡る
 // ---------------------------------------------------------------------------
 describe("createSpeechStream() — handle.write() の動作", () => {
@@ -240,6 +286,43 @@ describe("createSpeechStream() — data イベント / isFinal=false", () => {
     });
 
     expect(onFinal).toHaveBeenCalledWith("");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3b. data イベント — languageCode（言語検出モード、bd-ecb）
+// ---------------------------------------------------------------------------
+describe("createSpeechStream() — data イベント / final結果のlanguageCode", () => {
+  test("result.languageCode がある final は onFinal(text, languageCode) として第2引数付きで呼ばれる", () => {
+    const mockStream = createMockRecognizeStream();
+    const mockClient = createMockSpeechClient(mockStream);
+    const onFinal = jest.fn();
+    createSpeechStream(makeOptions({ onFinal }), mockClient);
+
+    mockStream.emit("data", {
+      results: [
+        { alternatives: [{ transcript: "Hello" }], isFinal: true, languageCode: "en-US" },
+      ],
+    });
+
+    expect(onFinal).toHaveBeenCalledTimes(1);
+    expect(onFinal).toHaveBeenCalledWith("Hello", "en-US");
+  });
+
+  test("result.languageCode がない final は onFinal(text) として第2引数なし（undefined引数を明示しない）で呼ばれる", () => {
+    const mockStream = createMockRecognizeStream();
+    const mockClient = createMockSpeechClient(mockStream);
+    const onFinal = jest.fn();
+    createSpeechStream(makeOptions({ onFinal }), mockClient);
+
+    mockStream.emit("data", {
+      results: [{ alternatives: [{ transcript: "こんにちは" }], isFinal: true }],
+    });
+
+    expect(onFinal).toHaveBeenCalledTimes(1);
+    // 第2引数を渡さない呼び出しであることを、引数の個数まで含めて検証する
+    expect(onFinal.mock.calls[0]).toEqual(["こんにちは"]);
+    expect(onFinal.mock.calls[0].length).toBe(1);
   });
 });
 

@@ -181,6 +181,8 @@ MediaRecorder の Blob を base64 化（WebM/Opus 48kHz）。STTストリーム�
 
 `participant_joined` / `participant_left` は **Phase1 実装済み**（bd-124.3 で前倒し。join成功時・切断時に在室中の他参加者へ配信。UIの参加者数表示は present な参加者のみカウントする）。`participant_left.reason`（`"disconnected"`（一時断）/ `"ended"`（終了）の区別）と `participant_updated` は Phase2（一時断と終了の区別は [server-design.md](./server-design.md#不在終了判定) を参照）。
 
+> **`participant_updated` の配信範囲（bd-ecb で確定）**: `participant_joined` / `participant_left` が「在室中の**他**参加者へ配信」なのに対し、`participant_updated` は**話者本人を含む全参加者へ配信**する。言語検出モード（FR-4.3）で確定した言語は本人のUI（言語表示・検出トグルの自動OFF）にも反映が必要なため。現時点の発火契機は言語検出モードの確定のみ（bd-ecb 実装。フロント側の受信ハンドリングは bd-fki のスコープ）。
+
 ### `transcript_interim` / `transcript_final` / `utterance_committed`（話者本人にのみ）
 
 ```json

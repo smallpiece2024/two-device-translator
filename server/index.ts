@@ -126,6 +126,23 @@ function routeCommittedUtterance(
 }
 
 /**
+ * 言語検出モード（FR-4.3・D-9）で話者言語が確定した際、ルーム内の全参加者
+ * （本人含む）へ `participant_updated` を配信する。
+ * ルームが既に存在しない場合は何もしない（docs/design/websocket-protocol.md
+ * 「参加者イベント」参照）。
+ */
+function broadcastLanguageDetected(room: Room, speakerSession: Session): void {
+  for (const participant of room.participants.values()) {
+    participant.send({
+      type: "participant_updated",
+      participantId: speakerSession.participantId,
+      displayName: speakerSession.displayName,
+      language: speakerSession.language,
+    });
+  }
+}
+
+/**
  * ルーム終了（オーナーの `request_end` / 不在自動終了の両方）の共通処理。
  * `roomManager.endRoom()` 実行後に呼ぶこと（この関数自身は状態遷移を行わない）。
  *
@@ -373,6 +390,16 @@ export function startServer(
                 return;
               }
               routeCommittedUtterance(room, session, utteranceText, routerDeps);
+            },
+            onLanguageDetected: () => {
+              if (!roomId || !session) {
+                return;
+              }
+              const room = roomManager.getRoom(roomId);
+              if (!room) {
+                return;
+              }
+              broadcastLanguageDetected(room, session);
             },
           });
           return;
