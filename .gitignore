@@ -153,3 +153,13 @@ dist-server/
 # Playwright E2E artifacts
 /test-results/
 /playwright-report/
+
+# Terraform（infra/terraform/）
+# state ファイルは秘匿情報を含みうるためコミットしない。
+# .terraform.lock.hcl はプロバイダバージョン固定のためコミットする（除外しない）。
+infra/terraform/.terraform/
+infra/terraform/*.tfstate
+infra/terraform/*.tfstate.*
+infra/terraform/terraform.tfvars
+infra/terraform/*.tfplan
+infra/terraform/crash.log

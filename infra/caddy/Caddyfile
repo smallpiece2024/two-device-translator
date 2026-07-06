@@ -1,0 +1,14 @@
+# Caddyfile（GCE VM上に配置。docs/design/infra-design.md「リバースプロキシ」参照）
+#
+# 環境変数 APP_DOMAIN を Caddy 起動時に設定すること
+# （例: systemd の Environment= または `APP_DOMAIN=sallytalk.jp caddy run ...`）。
+# HTTPS証明書は Let's Encrypt から自動取得・更新される（DNSがこのVMを指す前提）。
+
+{$APP_DOMAIN} {
+	encode gzip
+
+	# WebSocket は Upgrade ヘッダを Caddy が自動処理する
+	reverse_proxy /ws* 127.0.0.1:3001
+
+	reverse_proxy 127.0.0.1:3000
+}
