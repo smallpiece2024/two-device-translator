@@ -1,5 +1,8 @@
 import {
   createAudioPlaybackQueue,
+  createHtmlAudioPlayer,
+  primeHtmlAudioPlayback,
+  resetHtmlAudioPlaybackForTest,
   type AudioPlayer,
   type AudioPlayerFactory,
 } from "@/lib/audioPlaybackQueue";
@@ -187,5 +190,146 @@ describe("audioPlaybackQueue", () => {
 
     expect(() => queue.dispose()).not.toThrow();
     expect(mock.stopCallCount()).toBe(0);
+  });
+});
+
+/**
+ * テスト用フェイク Audio 要素。play() の成否を制御できる。
+ * jsdom の HTMLMediaElement.play は未実装のため、注入で差し替える。
+ */
+function createFakeAudioElement(playBehavior: "resolve" | "reject") {
+  const element = {
+    src: "",
+    playCalls: 0,
+    pauseCalls: 0,
+    play(): Promise<void> {
+      element.playCalls += 1;
+      return playBehavior === "resolve"
+        ? Promise.resolve()
+        : Promise.reject(new Error("NotAllowedError (autoplay blocked)"));
+    },
+    pause(): void {
+      element.pauseCalls += 1;
+    },
+  };
+  return element;
+}
+
+describe("primeHtmlAudioPlayback（自動再生制限のアンロック、bd-8bd）", () => {
+  beforeEach(() => {
+    resetHtmlAudioPlaybackForTest();
+  });
+
+  afterAll(() => {
+    resetHtmlAudioPlaybackForTest();
+  });
+
+  it("初回呼び出しで無音データをplayし、成功したらpauseしてアンロック済みになる", async () => {
+    const element = createFakeAudioElement("resolve");
+    primeHtmlAudioPlayback(() => element as unknown as HTMLAudioElement);
+
+    await Promise.resolve(); // play() の then を消化
+
+    expect(element.playCalls).toBe(1);
+    expect(element.pauseCalls).toBe(1);
+    expect(element.src.startsWith("data:audio/wav;base64,")).toBe(true);
+  });
+
+  it("アンロック成功後の再呼び出しはno-op（playが再実行されない）", async () => {
+    const element = createFakeAudioElement("resolve");
+    primeHtmlAudioPlayback(() => element as unknown as HTMLAudioElement);
+    await Promise.resolve();
+
+    primeHtmlAudioPlayback(() => element as unknown as HTMLAudioElement);
+    await Promise.resolve();
+
+    expect(element.playCalls).toBe(1);
+  });
+
+  it("play()が拒否された場合はアンロック済みにならず、次の呼び出しで再試行する", async () => {
+    const element = createFakeAudioElement("reject");
+    primeHtmlAudioPlayback(() => element as unknown as HTMLAudioElement);
+    await Promise.resolve();
+    await Promise.resolve(); // reject の catch を消化
+
+    primeHtmlAudioPlayback(() => element as unknown as HTMLAudioElement);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // 2回とも play が試行される（1回目の失敗で primed 扱いにしない）
+    expect(element.playCalls).toBe(2);
+    // 同じ共有要素が使い回される（ファクトリは初回のみ呼ばれるため
+    // playCalls が同一要素上で加算されていることが証左）
+  });
+
+  it("アンロック後、createHtmlAudioPlayerが共有要素を使い回す（srcをmp3へ差し替えてplay）", async () => {
+    const element = createFakeAudioElement("resolve");
+    primeHtmlAudioPlayback(() => element as unknown as HTMLAudioElement);
+    await Promise.resolve();
+    expect(element.playCalls).toBe(1);
+
+    const player = createHtmlAudioPlayer("dGVzdA==");
+    expect(element.src).toBe("data:audio/mpeg;base64,dGVzdA==");
+
+    player.play();
+    await Promise.resolve();
+    expect(element.playCalls).toBe(2);
+  });
+
+  it("共有要素で実再生中はprimeがスキップされる（src書き換え・pauseで再生を中断しない）", async () => {
+    // 未アンロック（play拒否）の状態を作る
+    const element = createFakeAudioElement("reject");
+    primeHtmlAudioPlayback(() => element as unknown as HTMLAudioElement);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(element.playCalls).toBe(1);
+
+    // 実再生を開始（共有要素が使用中になる）
+    const player = createHtmlAudioPlayer("dGVzdA==");
+    player.play();
+    expect(element.playCalls).toBe(2);
+    const srcDuringPlayback = element.src;
+
+    // 再生中の prime は no-op（src を無音WAVに書き換えない・play しない）
+    primeHtmlAudioPlayback(() => element as unknown as HTMLAudioElement);
+    expect(element.playCalls).toBe(2);
+    expect(element.src).toBe(srcDuringPlayback);
+
+    // 再生完了（onended）で使用中が解除され、次の prime は再試行される
+    (element as unknown as { onended: () => void }).onended();
+    primeHtmlAudioPlayback(() => element as unknown as HTMLAudioElement);
+    expect(element.playCalls).toBe(3);
+  });
+
+  it("primeのplay解決前に実再生がsrcを差し替えていた場合、pauseしない（TTSを止めない）", async () => {
+    // play() の解決タイミングを手動制御できるフェイク
+    let resolvePlay: (() => void) | null = null;
+    const element = {
+      src: "",
+      playCalls: 0,
+      pauseCalls: 0,
+      onended: null as (() => void) | null,
+      onerror: null as ((e: unknown) => void) | null,
+      play(): Promise<void> {
+        element.playCalls += 1;
+        return new Promise<void>((resolve) => {
+          resolvePlay = resolve;
+        });
+      },
+      pause(): void {
+        element.pauseCalls += 1;
+      },
+    };
+
+    primeHtmlAudioPlayback(() => element as unknown as HTMLAudioElement);
+    expect(element.playCalls).toBe(1);
+
+    // prime の play が解決する前に、実再生が src を差し替えた状況を再現
+    element.src = "data:audio/mpeg;base64,dGVzdA==";
+    resolvePlay?.();
+    await Promise.resolve();
+
+    // src が無音WAVでないため pause は呼ばれない（TTS再生を中断しない）
+    expect(element.pauseCalls).toBe(0);
   });
 });

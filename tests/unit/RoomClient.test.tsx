@@ -20,6 +20,7 @@ import type { ClientMessage, ServerMessage } from "@shared/index";
 
 jest.mock("@/lib/audioPlaybackQueue", () => ({
   createAudioPlaybackQueue: jest.fn(),
+  primeHtmlAudioPlayback: jest.fn(),
 }));
 
 const createAudioPlaybackQueueMock = createAudioPlaybackQueue as jest.MockedFunction<

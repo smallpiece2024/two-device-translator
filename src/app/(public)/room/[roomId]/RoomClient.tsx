@@ -21,7 +21,11 @@ import {
 import { ChatTimeline } from "@/components/ChatTimeline/ChatTimeline";
 import { Recorder, type RecorderStatus } from "@/components/Recorder/Recorder";
 import { SettingsPanel } from "@/components/SettingsPanel/SettingsPanel";
-import { createAudioPlaybackQueue, type AudioPlaybackQueue } from "@/lib/audioPlaybackQueue";
+import {
+  createAudioPlaybackQueue,
+  primeHtmlAudioPlayback,
+  type AudioPlaybackQueue,
+} from "@/lib/audioPlaybackQueue";
 import { initialRoomState, roomReducer, toMessageView, type AppStatus } from "./reducer";
 import styles from "./RoomClient.module.css";
 
@@ -99,6 +103,20 @@ export function RoomClient({
   const [detectLanguage, setDetectLanguage] = useState(false);
   // オーナーの終了ボタンの2段階確認（誤タップ防止）。
   const [endConfirming, setEndConfirming] = useState(false);
+
+  // モバイルブラウザの自動再生制限対策（bd-8bd）: 最初のユーザー操作
+  // （画面のどこかへのタップ/クリック）で共有 Audio 要素をアンロックする。
+  // アンロック成功後の prime 呼び出しは no-op のため、リスナーは張ったままでよい
+  // （失敗時は次のジェスチャで自動的に再試行される）。
+  useEffect(() => {
+    const prime = () => primeHtmlAudioPlayback();
+    document.addEventListener("pointerdown", prime, { passive: true });
+    document.addEventListener("touchend", prime, { passive: true });
+    return () => {
+      document.removeEventListener("pointerdown", prime);
+      document.removeEventListener("touchend", prime);
+    };
+  }, []);
 
   const socketRef = useRef<WebSocket | null>(null);
   const reconnectAttemptsRef = useRef(0);
