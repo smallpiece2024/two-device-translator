@@ -946,4 +946,250 @@ describe("RoomClient", () => {
       });
     });
   });
+
+  /**
+   * two-device-translator-2re: 再接続の指数バックオフ・上限到達時のfatal化・
+   * fatalエラー受信後の再接続抑止・StrictMode二重mount耐性のテスト。
+   *
+   * `RoomClient.tsx` の定数: MAX_RECONNECT_ATTEMPTS=5,
+   * BASE_RECONNECT_DELAY_MS=500, MAX_RECONNECT_DELAY_MS=8000。
+   * delay = min(500 * 2^attempt, 8000) （attempt は0始まりの失敗回数）。
+   */
+  describe("再接続の指数バックオフ・上限・fatal抑止（bd-2re）", () => {
+    it("close→再接続の遅延が 500ms→1000ms→2000ms→4000ms→8000ms と指数的に増加し、MAX_RECONNECT_DELAY_MSで頭打ちになる", () => {
+      render(<RoomClient roomId="room-abc" wsUrl="ws://localhost:3001/ws" />);
+      const socket1 = latestSocket();
+
+      act(() => {
+        socket1.dispatchOpen();
+      });
+
+      // 1回目: close → 500ms後に再接続（499msでは未接続）
+      act(() => {
+        socket1.dispatchClose();
+      });
+      expect(MockWebSocket.instances).toHaveLength(1);
+      act(() => {
+        jest.advanceTimersByTime(499);
+      });
+      expect(MockWebSocket.instances).toHaveLength(1);
+      act(() => {
+        jest.advanceTimersByTime(1);
+      });
+      expect(MockWebSocket.instances).toHaveLength(2);
+      const socket2 = latestSocket();
+      expect(socket2).not.toBe(socket1);
+
+      // 2回目: 前回接続が成立しないまま close（＝失敗）→ 1000ms後に再接続
+      // （999msでは未接続）。open済みの状態だと open ハンドラが
+      // reconnectAttemptsRef を0にリセットしてしまうため、意図的に open せず
+      // 「接続確立前の失敗」を再現する。
+      act(() => {
+        socket2.dispatchClose();
+      });
+      act(() => {
+        jest.advanceTimersByTime(999);
+      });
+      expect(MockWebSocket.instances).toHaveLength(2);
+      act(() => {
+        jest.advanceTimersByTime(1);
+      });
+      expect(MockWebSocket.instances).toHaveLength(3);
+      const socket3 = latestSocket();
+
+      // 3回目: 2000ms後
+      act(() => {
+        socket3.dispatchClose();
+      });
+      act(() => {
+        jest.advanceTimersByTime(1999);
+      });
+      expect(MockWebSocket.instances).toHaveLength(3);
+      act(() => {
+        jest.advanceTimersByTime(1);
+      });
+      expect(MockWebSocket.instances).toHaveLength(4);
+      const socket4 = latestSocket();
+
+      // 4回目: 4000ms後
+      act(() => {
+        socket4.dispatchClose();
+      });
+      act(() => {
+        jest.advanceTimersByTime(3999);
+      });
+      expect(MockWebSocket.instances).toHaveLength(4);
+      act(() => {
+        jest.advanceTimersByTime(1);
+      });
+      expect(MockWebSocket.instances).toHaveLength(5);
+      const socket5 = latestSocket();
+
+      // 5回目: 本来 500*2^4=8000ms のところ、MAX_RECONNECT_DELAY_MS=8000ms の
+      // 頭打ちと一致する（7999msでは未接続・8000msで新インスタンス）。
+      act(() => {
+        socket5.dispatchClose();
+      });
+      act(() => {
+        jest.advanceTimersByTime(7999);
+      });
+      expect(MockWebSocket.instances).toHaveLength(5);
+      act(() => {
+        jest.advanceTimersByTime(1);
+      });
+      expect(MockWebSocket.instances).toHaveLength(6);
+    });
+
+    it("MAX_RECONNECT_ATTEMPTS回（5回）失敗すると以降は再接続されずfatalエラー表示になる", () => {
+      render(<RoomClient roomId="room-abc" wsUrl="ws://localhost:3001/ws" />);
+      const socket1 = latestSocket();
+
+      act(() => {
+        socket1.dispatchOpen();
+      });
+
+      // 1〜5回目の失敗（delay: 500,1000,2000,4000,8000ms）。open済みの初回接続
+      // (socket1)がclose、以降4回は接続未確立のまま close する。
+      const delays = [500, 1000, 2000, 4000, 8000];
+      let current = socket1;
+      for (const delay of delays) {
+        act(() => {
+          current.dispatchClose();
+        });
+        act(() => {
+          jest.advanceTimersByTime(delay);
+        });
+        current = latestSocket();
+      }
+
+      // ここまでで6個目のソケット（5回目の再接続で生成されたもの）が存在する
+      expect(MockWebSocket.instances).toHaveLength(6);
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+      // 6回目のclose（5回の再接続すべてが失敗）→ 上限到達、fatalエラー表示。
+      act(() => {
+        current.dispatchClose();
+      });
+
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "サーバーとの接続を確立できませんでした。",
+      );
+
+      // 以降タイマーを進めても再接続されない
+      act(() => {
+        jest.advanceTimersByTime(60_000);
+      });
+      expect(MockWebSocket.instances).toHaveLength(6);
+    });
+
+    it("サーバーからfatalなerrorを受信してcloseされた後は再接続されず、エラー文言もサーバー由来のまま維持される", () => {
+      render(<RoomClient roomId="room-abc" wsUrl="ws://localhost:3001/ws" />);
+      const socket = latestSocket();
+
+      act(() => {
+        socket.dispatchOpen();
+        socket.dispatchMessage({
+          type: "joined",
+          participantId: "p1",
+          room: { id: "room-abc", status: "active" },
+          participants: [],
+          recentMessages: [],
+        });
+      });
+
+      const instancesBeforeFatal = MockWebSocket.instances.length;
+
+      act(() => {
+        socket.dispatchMessage({
+          type: "error",
+          message: "ルームが見つかりません。",
+          fatal: true,
+        });
+      });
+
+      // message ハンドラが fatal:true を受けて socket.close() を呼ぶため、
+      // close イベントも連動して発火する（MockWebSocketの実装）。
+      expect(socket.closed).toBe(true);
+      expect(screen.getByRole("alert")).toHaveTextContent("ルームが見つかりません。");
+
+      act(() => {
+        jest.advanceTimersByTime(60_000);
+      });
+
+      // 再接続はスケジュールされない
+      expect(MockWebSocket.instances.length).toBe(instancesBeforeFatal);
+      // 汎用のfatal文言（上限到達時の文言）で上書きされていないこと
+      expect(screen.getByRole("alert")).toHaveTextContent("ルームが見つかりません。");
+      expect(screen.queryByText("サーバーとの接続を確立できませんでした。")).not.toBeInTheDocument();
+    });
+  });
+
+  /**
+   * two-device-translator-2re: StrictMode二重mount時のWebSocket接続の
+   * 収束性・joinの送信元ソケット・unmount時の全ソケットclose検証。
+   * （既存の「StrictModeの二重mountでもaudioQueueが機能し続ける」テストは
+   * audioPlaybackQueue側の検証であり、本テストはWebSocket接続側を検証する。）
+   */
+  describe("StrictMode二重mount時のWebSocket接続耐性（bd-2re）", () => {
+    it("二重mountの初回effectで生成されたソケットはcloseされ、2つ目のソケットのみが生きた状態でjoinを送信する", () => {
+      render(
+        <StrictMode>
+          <RoomClient roomId="room-abc" wsUrl="ws://localhost:3001/ws" role="owner" />
+        </StrictMode>,
+      );
+
+      // StrictModeのmount→cleanup→mountにより、WebSocketは2つ生成される。
+      expect(MockWebSocket.instances).toHaveLength(2);
+      const [firstSocket, secondSocket] = MockWebSocket.instances;
+
+      // 1つ目（無効化されたeffect実行由来）は即座にcloseされ、
+      // 一度もopenしないまま終わっている（joinも送信されていない）。
+      expect(firstSocket.closed).toBe(true);
+      expect(firstSocket.sent).toHaveLength(0);
+
+      // 2つ目（有効なeffect実行由来）が生きたソケットとして機能する。
+      expect(secondSocket.closed).toBe(false);
+
+      act(() => {
+        secondSocket.dispatchOpen();
+      });
+
+      const sentOnSecond = secondSocket.getSentMessages();
+      expect(sentOnSecond).toHaveLength(1);
+      expect(sentOnSecond[0]).toMatchObject({ type: "join", roomId: "room-abc", role: "owner" });
+
+      // 1つ目は無効化されたままjoinを送っていない。
+      expect(firstSocket.sent).toHaveLength(0);
+    });
+
+    it("unmountするとStrictModeで生成された全てのソケットがcloseされる", () => {
+      const { unmount } = render(
+        <StrictMode>
+          <RoomClient roomId="room-abc" wsUrl="ws://localhost:3001/ws" />
+        </StrictMode>,
+      );
+
+      expect(MockWebSocket.instances).toHaveLength(2);
+      const [firstSocket, secondSocket] = MockWebSocket.instances;
+
+      // 1つ目は既にcleanupでcloseされている。2つ目は生きている。
+      expect(firstSocket.closed).toBe(true);
+      expect(secondSocket.closed).toBe(false);
+
+      act(() => {
+        secondSocket.dispatchOpen();
+      });
+
+      unmount();
+
+      expect(firstSocket.closed).toBe(true);
+      expect(secondSocket.closed).toBe(true);
+
+      // unmount後にタイマーを進めても再接続（新規ソケット生成）は起きない。
+      act(() => {
+        jest.advanceTimersByTime(60_000);
+      });
+      expect(MockWebSocket.instances).toHaveLength(2);
+    });
+  });
 });
