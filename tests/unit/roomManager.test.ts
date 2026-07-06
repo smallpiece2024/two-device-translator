@@ -12,7 +12,11 @@
  */
 import { randomUUID } from "node:crypto";
 import type { WebSocket } from "ws";
-import { RoomManager, DEFAULT_AUTO_END_THRESHOLD_MS } from "../../server/room/roomManager";
+import {
+  RoomManager,
+  DEFAULT_AUTO_END_THRESHOLD_MS,
+  DEFAULT_ENDED_ROOM_TTL_MS,
+} from "../../server/room/roomManager";
 import type { ParticipantIdentity } from "../../server/room/session";
 
 /** Session が参照する WebSocket の最小限のフェイク */
@@ -105,16 +109,174 @@ describe("RoomManager", () => {
       expect(result.ok).toBe(false);
     });
 
-    it("statusがendedのルームへのjoinはok:falseで拒否される", () => {
+    it("statusがendedのルームへのguestのjoinはok:falseで拒否される（bd-gz1: ownerは再開するためguestで検証する）", () => {
       const manager = new RoomManager();
       const room = manager.getOrCreateRoom("room-1");
       room.status = "ended";
+      room.endedReason = "owner_ended";
 
-      const result = manager.join("room-1", makeIdentity(), createFakeWs());
+      const result = manager.join("room-1", makeIdentity({ role: "guest" }), createFakeWs());
 
       expect(result.ok).toBe(false);
       if (result.ok) return;
       expect(result.reason).toMatch(/ended/i);
+      expect(result.endedReason).toBe("owner_ended");
+    });
+
+    describe("endedルームの再開（bd-gz1、FR-12.3）", () => {
+      it("statusがendedのルームへownerがjoinすると再開し、ok:true・reopened:trueでactiveに戻る", () => {
+        const manager = new RoomManager();
+        const room = manager.getOrCreateRoom("room-1");
+        room.status = "ended";
+        room.endedReason = "owner_ended";
+
+        const result = manager.join("room-1", makeIdentity({ role: "owner" }), createFakeWs());
+
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(result.reopened).toBe(true);
+        expect(result.room.status).toBe("active");
+        expect(result.room.endedReason).toBeNull();
+      });
+
+      it("再開時以外（activeなルームへの通常join）はreopened:falseになる", () => {
+        const manager = new RoomManager();
+        const result = manager.join("room-1", makeIdentity({ role: "owner" }), createFakeWs());
+
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(result.reopened).toBe(false);
+      });
+
+      it("再開後、ended-room TTLタイマーが解除される", () => {
+        jest.useFakeTimers();
+        try {
+          const manager = new RoomManager({ endedRoomTtlMs: 1000 });
+          manager.getOrCreateRoom("room-1");
+          manager.endRoom("room-1");
+          expect(manager.getRoom("room-1")?.endedRoomTtlTimer).not.toBeNull();
+
+          manager.join("room-1", makeIdentity({ role: "owner" }), createFakeWs());
+          expect(manager.getRoom("room-1")?.endedRoomTtlTimer).toBeNull();
+
+          jest.advanceTimersByTime(2000);
+          expect(manager.getRoom("room-1")).toBeDefined();
+        } finally {
+          jest.useRealTimers();
+        }
+      });
+
+      it("再開後、不在自動終了タイマーが再び機能する（再開後に1人以下が続くと再度自動終了する）", () => {
+        jest.useFakeTimers();
+        try {
+          const onAutoEnd = jest.fn();
+          const manager = new RoomManager({ autoEndThresholdMs: 1000, onAutoEnd });
+          const identity = makeIdentity({ role: "owner" });
+          manager.join("room-1", identity, createFakeWs());
+          manager.endRoom("room-1");
+          expect(onAutoEnd).not.toHaveBeenCalled();
+
+          // オーナーの再joinで再開する
+          manager.join("room-1", identity, createFakeWs());
+          expect(manager.getRoom("room-1")?.status).toBe("active");
+          expect(manager.getRoom("room-1")?.autoEndTimer).not.toBeNull();
+
+          jest.advanceTimersByTime(1000);
+
+          expect(onAutoEnd).toHaveBeenCalledTimes(1);
+          expect(manager.getRoom("room-1")?.status).toBe("ended");
+        } finally {
+          jest.useRealTimers();
+        }
+      });
+
+      it(
+        "owner+guestが参加したルームをendRoom後、ownerが再joinして再開すると、旧参加者エントリは" +
+          "クリアされ、別のparticipantIdの新ゲストがmaxParticipants=2でも正常にjoinできる" +
+          "（コードレビュー指摘should-fix1: クリアしないと旧guestの席残留でroom is fullになる構造）",
+        () => {
+          const manager = new RoomManager({ maxParticipants: 2 });
+          const ownerIdentity = makeIdentity({ role: "owner" });
+          const oldGuestIdentity = makeIdentity({ role: "guest" });
+          manager.join("room-1", ownerIdentity, createFakeWs());
+          manager.join("room-1", oldGuestIdentity, createFakeWs());
+
+          manager.endRoom("room-1");
+
+          const rejoinOwner = manager.join("room-1", ownerIdentity, createFakeWs());
+          expect(rejoinOwner.ok).toBe(true);
+          if (rejoinOwner.ok) {
+            expect(rejoinOwner.reopened).toBe(true);
+          }
+          // 旧guestのエントリはクリアされ、owner再joinの1人のみが在室する
+          expect(manager.getRoom("room-1")?.participants.size).toBe(1);
+          expect(
+            manager.getRoom("room-1")?.participants.has(oldGuestIdentity.participantId),
+          ).toBe(false);
+
+          const newGuestIdentity = makeIdentity({ role: "guest" });
+          const newGuestResult = manager.join("room-1", newGuestIdentity, createFakeWs());
+
+          expect(newGuestResult.ok).toBe(true);
+          expect(manager.getRoom("room-1")?.participants.size).toBe(2);
+        },
+      );
+
+      it(
+        "再開後、旧guestと同一participantIdでjoinしても新規参加として正常に復帰できる" +
+          "（クリア後の新規参加のため、present:true・reconnected:falseで受理される）",
+        () => {
+          const manager = new RoomManager({ maxParticipants: 2 });
+          const ownerIdentity = makeIdentity({ role: "owner" });
+          const guestIdentity = makeIdentity({ role: "guest" });
+          manager.join("room-1", ownerIdentity, createFakeWs());
+          manager.join("room-1", guestIdentity, createFakeWs());
+
+          manager.endRoom("room-1");
+          manager.join("room-1", ownerIdentity, createFakeWs());
+
+          const result = manager.join("room-1", guestIdentity, createFakeWs());
+
+          expect(result.ok).toBe(true);
+          if (!result.ok) return;
+          expect(result.reconnected).toBe(false);
+          expect(result.session.present).toBe(true);
+          expect(result.session.participantId).toBe(guestIdentity.participantId);
+          expect(manager.getRoom("room-1")?.participants.size).toBe(2);
+        },
+      );
+
+      it("endRoom→再開→endRoomを繰り返しても正常に動作する", () => {
+        jest.useFakeTimers();
+        try {
+          const manager = new RoomManager();
+          const identity = makeIdentity({ role: "owner" });
+
+          manager.join("room-1", identity, createFakeWs());
+          const ended1 = manager.endRoom("room-1");
+          expect(ended1?.status).toBe("ended");
+
+          const rejoin1 = manager.join("room-1", identity, createFakeWs());
+          expect(rejoin1.ok).toBe(true);
+          if (rejoin1.ok) {
+            expect(rejoin1.reopened).toBe(true);
+          }
+          expect(manager.getRoom("room-1")?.status).toBe("active");
+
+          const ended2 = manager.endRoom("room-1");
+          expect(ended2?.status).toBe("ended");
+
+          const rejoin2 = manager.join("room-1", identity, createFakeWs());
+          expect(rejoin2.ok).toBe(true);
+          if (rejoin2.ok) {
+            expect(rejoin2.reopened).toBe(true);
+          }
+          expect(manager.getRoom("room-1")?.status).toBe("active");
+          expect(manager.roomCount).toBe(1);
+        } finally {
+          jest.useRealTimers();
+        }
+      });
     });
 
     describe("再接続復帰（同一participantIdでのjoin）", () => {
@@ -368,12 +530,12 @@ describe("RoomManager", () => {
       }
     });
 
-    it("ended状態のルームへのjoinは拒否される", () => {
+    it("ended状態のルームへのguestのjoinは拒否される（bd-gz1: ownerは再開するためguestで検証する）", () => {
       const manager = new RoomManager();
       manager.getOrCreateRoom("room-1");
       manager.endRoom("room-1");
 
-      const result = manager.join("room-1", makeIdentity(), createFakeWs());
+      const result = manager.join("room-1", makeIdentity({ role: "guest" }), createFakeWs());
 
       expect(result.ok).toBe(false);
     });
@@ -405,6 +567,57 @@ describe("RoomManager", () => {
       } finally {
         jest.useRealTimers();
       }
+    });
+  });
+
+  describe("endedルームのTTLクリーンアップ（endedRoomTtlMs、bd-gz1）", () => {
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it("既定のTTLは30分（DEFAULT_ENDED_ROOM_TTL_MS）である", () => {
+      expect(DEFAULT_ENDED_ROOM_TTL_MS).toBe(30 * 60 * 1000);
+    });
+
+    it("endRoom後、endedRoomTtlMs経過するとレジストリからdestroyRoomされる", () => {
+      jest.useFakeTimers();
+      const manager = new RoomManager({ endedRoomTtlMs: 1000 });
+      manager.getOrCreateRoom("room-1");
+      manager.endRoom("room-1");
+      expect(manager.getRoom("room-1")).toBeDefined();
+
+      jest.advanceTimersByTime(1000);
+
+      expect(manager.getRoom("room-1")).toBeUndefined();
+      expect(manager.roomCount).toBe(0);
+    });
+
+    it("TTL経過前にownerが再joinして再開すれば、TTL到達してもdestroyされない", () => {
+      jest.useFakeTimers();
+      const manager = new RoomManager({ endedRoomTtlMs: 1000 });
+      const identity = makeIdentity({ role: "owner" });
+      manager.join("room-1", identity, createFakeWs());
+      manager.endRoom("room-1");
+
+      jest.advanceTimersByTime(500);
+      manager.join("room-1", identity, createFakeWs());
+
+      jest.advanceTimersByTime(1000);
+
+      expect(manager.getRoom("room-1")).toBeDefined();
+      expect(manager.getRoom("room-1")?.status).toBe("active");
+    });
+
+    it("destroyRoomを明示的に呼ぶとended-room TTLタイマーも解除される（破棄後にタイマーが発火しても例外は起きない）", () => {
+      jest.useFakeTimers();
+      const manager = new RoomManager({ endedRoomTtlMs: 1000 });
+      manager.getOrCreateRoom("room-1");
+      manager.endRoom("room-1");
+
+      manager.destroyRoom("room-1");
+
+      expect(() => jest.advanceTimersByTime(2000)).not.toThrow();
+      expect(manager.getRoom("room-1")).toBeUndefined();
     });
   });
 
@@ -496,18 +709,37 @@ describe("RoomManager", () => {
       expect(onAutoEnd).not.toHaveBeenCalled();
     });
 
-    it("しきい値到達で自動終了した後、endedなルームへの再joinは拒否される", () => {
+    it("しきい値到達で自動終了した後、endedなルームへのguestの再joinは拒否される（bd-gz1: ownerは再開するためguestで検証する）", () => {
       jest.useFakeTimers();
       const onAutoEnd = jest.fn();
       const manager = new RoomManager({ autoEndThresholdMs: 1000, onAutoEnd });
-      const identity = makeIdentity();
+      const identity = makeIdentity({ role: "owner" });
       manager.join("room-1", identity, createFakeWs());
 
       jest.advanceTimersByTime(1000);
       expect(onAutoEnd).toHaveBeenCalledTimes(1);
 
-      const result = manager.join("room-1", makeIdentity(), createFakeWs());
+      const result = manager.join("room-1", makeIdentity({ role: "guest" }), createFakeWs());
       expect(result.ok).toBe(false);
+    });
+
+    it("しきい値到達で自動終了した後、endedなルームへのownerの再joinは再開する（bd-gz1）", () => {
+      jest.useFakeTimers();
+      const onAutoEnd = jest.fn();
+      const manager = new RoomManager({ autoEndThresholdMs: 1000, onAutoEnd });
+      const identity = makeIdentity({ role: "owner" });
+      manager.join("room-1", identity, createFakeWs());
+
+      jest.advanceTimersByTime(1000);
+      expect(onAutoEnd).toHaveBeenCalledTimes(1);
+      expect(manager.getRoom("room-1")?.status).toBe("ended");
+
+      const result = manager.join("room-1", identity, createFakeWs());
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.reopened).toBe(true);
+      }
+      expect(manager.getRoom("room-1")?.status).toBe("active");
     });
 
     it("onAutoEndが未指定でも例外を投げずに自動終了する", () => {

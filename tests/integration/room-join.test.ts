@@ -225,9 +225,10 @@ describe("WS server - room join (RoomManager結合テスト)", () => {
 
   it(
     "close時はleaveされるのみでルームは即座に破棄されない。全員不在の状態が" +
-      "autoEndThresholdMs継続すると自動終了し、以降の同一roomIdへのjoinは" +
+      "autoEndThresholdMs継続すると自動終了し、以降の同一roomIdへのguestのjoinは" +
       "errorではなくroom_ended(reason:auto_timeout)を受信した後に接続がcloseされる" +
-      "（bd-e3p、must-fix1: leaveだけでは破棄されず、自動終了タイマー経由でendedになる仕様に変更）",
+      "（bd-e3p、must-fix1: leaveだけでは破棄されず、自動終了タイマー経由でendedになる仕様に変更。" +
+      "bd-gz1: ownerの再joinは再開するため、このケースはguestで検証する）",
     async () => {
       // このテストのみ、しきい値を短く注入して自動終了を検証する
       // （固定sleepではなく、しきい値+十分な余裕を持たせた1回の待機で検証する）。
@@ -268,7 +269,7 @@ describe("WS server - room join (RoomManager結合テスト)", () => {
       const closePromise = new Promise<number>((resolve) => {
         client3.once("close", (code: number) => resolve(code));
       });
-      client3.send(JSON.stringify(makeJoin(roomId, "owner")));
+      client3.send(JSON.stringify(makeJoin(roomId, "guest")));
       const roomEnded = (await roomEndedPromise) as Extract<
         ServerMessage,
         { type: "room_ended" }
@@ -278,6 +279,43 @@ describe("WS server - room join (RoomManager結合テスト)", () => {
 
       const closeCode = await closePromise;
       expect(closeCode).toBe(1000);
+    },
+  );
+
+  it(
+    "自動終了後、同一roomIdへownerが再joinすると再開し、joinedを受信して会話を再開できる" +
+      "（bd-gz1、FR-12.3）",
+    async () => {
+      wss.clients.forEach((client) => client.terminate());
+      wss.close();
+      await new Promise<void>((resolve) => wss.once("close", resolve));
+      wss = startServer(0, HOST, { autoEndThresholdMs: 100 });
+      await new Promise<void>((resolve) => wss.once("listening", resolve));
+
+      const port = getPort(wss);
+      const roomId = `room-reopen-${Date.now()}`;
+
+      const client1 = connect(port);
+      await waitForOpen(client1);
+      const joined1Promise = waitForMessage(client1);
+      client1.send(JSON.stringify(makeJoin(roomId, "owner")));
+      await joined1Promise;
+
+      // 唯一の参加者（owner）をcloseし、自動終了を待つ
+      const close1 = waitForClose(client1);
+      client1.close();
+      await close1;
+      await new Promise((resolve) => setTimeout(resolve, 400));
+
+      const client2 = connect(port);
+      await waitForOpen(client2);
+      const joined2Promise = waitForMessage(client2);
+      client2.send(JSON.stringify(makeJoin(roomId, "owner")));
+      const joined2 = (await joined2Promise) as Extract<ServerMessage, { type: "joined" }>;
+
+      expect(joined2.type).toBe("joined");
+      expect(joined2.room).toEqual({ id: roomId, status: "active" });
+      expect(client2.readyState).toBe(WebSocket.OPEN);
     },
   );
 });

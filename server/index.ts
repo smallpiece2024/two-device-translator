@@ -5,7 +5,12 @@ import {
   type ServerMessage,
   type RoomEndedReason,
 } from "@shared/index";
-import { RoomManager, type Room, DEFAULT_AUTO_END_THRESHOLD_MS } from "./room/roomManager";
+import {
+  RoomManager,
+  type Room,
+  DEFAULT_AUTO_END_THRESHOLD_MS,
+  DEFAULT_ENDED_ROOM_TTL_MS,
+} from "./room/roomManager";
 import type { Session, CreateSpeechStreamFn } from "./room/session";
 import {
   verifyJoin as defaultVerifyJoin,
@@ -20,7 +25,7 @@ import {
   mockSynthesizeSpeechToBase64,
 } from "./gcp/mockGcp";
 import { routeUtterance, type RoutingParticipant, type MessageRouterDeps } from "./routing/messageRouter";
-import { markRoomEnded } from "./db/supabaseAdmin";
+import { markRoomEnded, markRoomActive } from "./db/supabaseAdmin";
 
 const WS_PORT = parseInt(process.env.WS_PORT ?? "3001", 10);
 const WS_HOST = "127.0.0.1";
@@ -42,6 +47,14 @@ export interface StartServerOptions {
    * テスト用に短い値へ差し替え可能。
    */
   autoEndThresholdMs?: number;
+  /**
+   * ended ルームの TTL（ms）。省略時は環境変数 `ENDED_ROOM_TTL_MS`
+   * → 既定値（`RoomManager.DEFAULT_ENDED_ROOM_TTL_MS`、30分）の順で解決する
+   * （bd-gz1、docs/design/server-design.md
+   * 「実装確定事項（bd-gz1 で追加: endedルームの再開）」参照）。
+   * テスト用に短い値へ差し替え可能。
+   */
+  endedRoomTtlMs?: number;
   /**
    * STT ストリーム生成関数（省略時は `GCP_MODE` 環境変数で解決。
    * `GCP_MODE=mock` のときは E2E 用モック、それ以外は実 GCP 実装）。
@@ -81,6 +94,25 @@ function resolveAutoEndThresholdMs(explicit?: number): number {
     }
   }
   return DEFAULT_AUTO_END_THRESHOLD_MS;
+}
+
+/**
+ * ended ルームの TTL（ms）を解決する（bd-gz1）。
+ * 優先順位: `options.endedRoomTtlMs` 明示指定 > 環境変数
+ * `ENDED_ROOM_TTL_MS`（正の整数のみ有効） > 既定値（30分）。
+ */
+function resolveEndedRoomTtlMs(explicit?: number): number {
+  if (explicit !== undefined) {
+    return explicit;
+  }
+  const envValue = process.env.ENDED_ROOM_TTL_MS;
+  if (envValue) {
+    const parsed = parseInt(envValue, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return DEFAULT_ENDED_ROOM_TTL_MS;
 }
 
 /** `Session` から `messageRouter.ts` の `RoutingParticipant` へ変換する */
@@ -189,6 +221,7 @@ export function startServer(
   const roomManager = new RoomManager({
     maxParticipants: options.maxParticipants,
     autoEndThresholdMs: resolveAutoEndThresholdMs(options.autoEndThresholdMs),
+    endedRoomTtlMs: resolveEndedRoomTtlMs(options.endedRoomTtlMs),
     onAutoEnd: (room) => finalizeRoomEnd(room, "auto_timeout"),
   });
   const verifyJoin = options.verifyJoin ?? defaultVerifyJoin;
@@ -327,6 +360,19 @@ export function startServer(
 
             session = joinResult.session;
             roomId = message.roomId;
+
+            // ended ルームの再開（FR-12.3、bd-gz1）: 検証済みオーナーの再joinで
+            // ルームを active に戻した場合、DB `rooms.status` も 'active' に
+            // 戻す（fire-and-forget。会話開始を待たせない、NFR-2.2 と同じ方針）。
+            // サーバー再起動後（メモリに Room がない）のオーナー再joinは
+            // `joinResult.reopened=false`（新規作成パス）だが、その場合も
+            // DB が ended のままだと再開できないため、オーナーの join 成功時は
+            // 常に markRoomActive を呼ぶ（既に active な行への更新は無害。
+            // docs/design/server-design.md「実装確定事項（bd-gz1 で追加:
+            // endedルームの再開）」参照）。
+            if (session.role === "owner") {
+              void markRoomActive(roomId);
+            }
 
             // 再接続復帰: 同一 participantId の古い接続がまだ開いていた場合、
             // 新しい接続を正としてそちらを閉じる（二重接続の設計判断、

@@ -93,3 +93,39 @@ export async function markRoomEnded(roomId: string): Promise<void> {
     );
   }
 }
+
+/**
+ * ended ルームの再開時に `rooms.status`/`ended_at` を更新する（bd-gz1、FR-12.3）。
+ * `server/index.ts` の join 成功パス（オーナーのみ）から fire-and-forget で
+ * 呼ばれる想定（docs/design/server-design.md
+ * 「実装確定事項（bd-gz1 で追加: endedルームの再開）」参照）。
+ *
+ * `markRoomEnded` と対になる関数。`ended_at` は `null` に戻す
+ * （再開後は「終了していない」状態を表すため）。オーナーの join 成功時は
+ * ルームが実際に ended だったかを問わず常に呼ばれる想定（既に `active` な
+ * 行への同一更新は無害であり、都度の状態判定コストを避ける単純さ優先の設計。
+ * `server/room/roomManager.ts` の `reopenRoom()` コメント参照）。
+ *
+ * 会話開始を遅延させない（NFR-2.2 と同じ方針）ため、失敗しても例外を
+ * 投げない（ログ出力のみ）。`SUPABASE_URL`/`SUPABASE_SERVICE_KEY` が
+ * 未設定の環境（AUTH_MODE=insecure での開発・E2E 等）でも WS サーバー
+ * 本体の join 処理を止めないよう、クライアント取得自体の失敗も捕捉する。
+ */
+export async function markRoomActive(roomId: string): Promise<void> {
+  try {
+    const supabase = getSupabaseAdminClient();
+    const { error } = await supabase
+      .from("rooms")
+      .update({ status: "active", ended_at: null })
+      .eq("id", roomId);
+
+    if (error) {
+      console.error("[supabaseAdmin] failed to mark room active:", error.message);
+    }
+  } catch (err) {
+    console.error(
+      "[supabaseAdmin] markRoomActive unexpected error:",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}

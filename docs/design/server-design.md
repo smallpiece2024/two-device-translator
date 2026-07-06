@@ -149,7 +149,18 @@ interface ParticipantRuntime {
 - **自動終了**: present が1人以下の状態が `AUTO_END_THRESHOLD_MS`（既定10分。env / `StartServerOptions.autoEndThresholdMs` で上書き可）継続で `room_ended(reason:"auto_timeout")` を配信して終了。タイマーは Room 単位・unref・破棄時クリア。
 - **明示終了**: `request_end` はオーナーのみ受理（ゲストは fatal:false エラー）。`room_ended(reason:"owner_ended")` を全員に配信→録音破棄→ソケット close→DB `rooms.status='ended'` 更新（fire-and-forget）。
 - **ended ルームへの再 join**: `{type:"room_ended", reason}` を送信してから close(1000)（エラーではなく終了案内を返す）。ended ルームはレジストリに残す。
-- **スコープ外（要フォローアップ）**: FR-12.3 の「再開」（ended ルームの再活性化）は未実装。フロント側の `room_ended` 受信ハンドリング（reducer の ROOM_ENDED 発火）も未実装で別タスク。
+- **スコープ外（要フォローアップ）**: FR-12.3 の「再開」（ended ルームの再活性化）は **bd-gz1 で実装済み**（下記）。フロント側の `room_ended` 受信ハンドリング（reducer の ROOM_ENDED 発火）は bd-4xi で実装済み。
+
+#### 実装確定事項（bd-gz1 で追加: endedルームの再開）
+
+FR-12.3「オーナーが再入室し再度QRで招待すると再開できる」に対応する。追加のプロトコルメッセージは作らず、**検証済みオーナーによる ended ルームへの再 join そのものを再開トリガーとする**。
+
+- **再開トリガー**: `RoomManager.join()` で `room.status==="ended"` かつ `identity.role==="owner"`（`verifyJoin` を通過済み）の場合、`reopenRoom()` で `status="active"`・`endedReason=null` に戻し、以降は通常の join 処理（既存 participantId への再接続、または新規参加）に合流する。**guest の ended ルームへの join は従来どおり拒否**（`room_ended` 案内＋close、再開しない）。
+- **メモリ/DB の整合**:
+  - メモリ上に Room が残っている場合（同一サーバープロセス継続中）: 上記 `reopenRoom()` で active に戻す。
+  - サーバー再起動後（メモリに Room が無く、DB は `ended` のまま）のオーナー join: `getOrCreateRoom()` が新規 Room（`status="active"`）を作るため `reopenRoom()` を経由しない「新規作成」パスになる。この場合も再開が成立するよう、`server/index.ts` は **オーナーの join 成功時は常に**（`joinResult.reopened` の真偽によらず）`markRoomActive(roomId)`（`server/db/supabaseAdmin.ts`、`markRoomEnded` と対の fire-and-forget 更新）を呼び、DB `rooms.status` を `'active'`・`ended_at` を `null` に戻す。既に `active` な行への同一更新は無害なため、「DBが ended のときのみ更新」という条件分岐（＝事前の読み取り）を避け、無条件呼び出しで整合させる（実装コスト・単純さ優先の判断）。
+- **ended ルームの TTL クリーンアップ**: 再 join 案内・オーナー再開のために ended ルームをレジストリに残し続けると無期限に溜まるため、`endRoom()` 実行時に `endedRoomTtlMs`（既定30分、`DEFAULT_ENDED_ROOM_TTL_MS`。env `ENDED_ROOM_TTL_MS` / `StartServerOptions.endedRoomTtlMs` で上書き可）の TTL タイマーを起動し、経過後に `destroyRoom()` でレジストリから完全に破棄する。タイマーは Room 単位・unref・`reopenRoom()`/`destroyRoom()` 実行時にクリア（既存の `autoEndTimer` と同じ流儀）。TTL 経過後にオーナーが join した場合は「メモリに Room なし」の新規作成パスに乗り、上記の DB 側整合（`markRoomActive`）により再開が成立する。
+- **`AUTH_MODE=insecure` での挙動**: insecure モードは `join.role` をそのまま identity の role として採用する（token 検証をスキップするのみで role 自体は偽装しない）ため、`role: "owner"` で join すれば同様に再開トリガーとなる。ただし insecure モードは `participantId` が接続ごとに新規発行されるため、再開後の join は常に「新規参加」扱いになる（既存 participantId への再接続にはならない）。
 
 ---
 
@@ -231,7 +242,7 @@ interface ParticipantRuntime {
 
 - クライアントは切断時に自動再接続を試みる（NFR-3.1）。再接続時も `join` を送る。
 - 同一 `participantId`（owner=Supabaseセッション、guest=ゲストクッキーの JWT）であれば、`RoomManager` は既存 `ParticipantRuntime` を `present=true` に戻し、`participant_joined` を配信（再入室扱い）。
-- ルームが既に `ended` の場合は `room_ended` を返して接続を閉じる。
+- ルームが既に `ended` の場合、guest は `room_ended` を返して接続を閉じる。**オーナーの場合は再開する**（FR-12.3、bd-gz1。詳細は下記「実装確定事項（bd-gz1 で追加: endedルームの再開）」参照）。
 
 ### 不在（一時断）と終了の区別（FR-12.2・Phase2）
 
