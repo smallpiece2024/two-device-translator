@@ -63,6 +63,39 @@ describe("JoinForm (guestToken)", () => {
     });
   });
 
+  it("guestToken+guestProfileありの場合、フォームをスキップして直接RoomClientがマウントされる（bd-1is）", () => {
+    render(
+      <JoinForm
+        roomId="room-123"
+        wsUrl="ws://localhost:3001/ws"
+        guestToken="guest-jwt-token"
+        guestProfile={{ displayName: "はなこ", language: "en-US" }}
+      />,
+    );
+
+    // フォームは表示されない
+    expect(screen.queryByRole("button", { name: "参加する" })).not.toBeInTheDocument();
+
+    const mock = screen.getByTestId("room-client-mock");
+    const props = JSON.parse(mock.getAttribute("data-props") ?? "{}");
+    expect(props.role).toBe("guest");
+    expect(props.displayName).toBe("はなこ");
+    expect(props.language).toBe("en-US");
+    expect(props.guestToken).toBe("guest-jwt-token");
+  });
+
+  it("guestTokenがあってもguestProfileが無い場合は従来どおりフォームを表示する（bd-1is）", () => {
+    render(
+      <JoinForm
+        roomId="room-123"
+        wsUrl="ws://localhost:3001/ws"
+        guestToken="guest-jwt-token"
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "参加する" })).toBeInTheDocument();
+  });
+
   it("guestTokenなしの場合、従来どおり役割セレクトが表示される（回帰確認）", () => {
     render(<JoinForm roomId="room-123" wsUrl="ws://localhost:3001/ws" />);
 
