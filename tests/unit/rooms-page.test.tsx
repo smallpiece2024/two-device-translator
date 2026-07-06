@@ -78,6 +78,11 @@ describe("RoomsPage", () => {
     expect(enterLinks[0]).toHaveAttribute("href", "/room/room-1");
     expect(enterLinks[1]).toHaveAttribute("href", "/room/room-2");
 
+    // 招待リンクは active なルームにのみ表示される（QR招待ページへの導線、bd-83x）。
+    const inviteLinks = screen.getAllByRole("link", { name: "招待" });
+    expect(inviteLinks).toHaveLength(1);
+    expect(inviteLinks[0]).toHaveAttribute("href", "/rooms/room-1/invite");
+
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 

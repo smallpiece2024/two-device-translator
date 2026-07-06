@@ -93,5 +93,8 @@ export async function createRoomAction(
     };
   }
 
-  redirect(`/room/${room.id}`);
+  // 作成後はQR招待ページへ遷移する（QRでゲストを招待→「入室する」で
+  // ルームへ、という要件FR-2の招待フローに沿った導線。bd での修正:
+  // 従来は /room/{id} へ直行しており、QRを表示する手段が無かった）。
+  redirect(`/rooms/${room.id}/invite`);
 }
