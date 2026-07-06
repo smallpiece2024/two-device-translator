@@ -16,8 +16,12 @@
  *
  * 招待の再利用方針: `docs/design/db-design.md#invites招待qr` に「再開時は
  * 既存 invite の再利用」に関する明示的な既定は無いため、無駄な行の増殖を避ける
- * YAGNI の観点から「有効期限内の既存 invite があれば再利用し、無ければ新規発行」
- * を採用する（このタスクでの判断。テスト担当への引き継ぎ事項）。
+ * YAGNI の観点から「有効期限内かつ未使用の既存 invite があれば再利用し、
+ * 無ければ新規発行」を採用する（このタスクでの判断。テスト担当への引き継ぎ事項）。
+ * 単回消費化（bd-1oy）により招待は一度参加に使われると再利用不可になるため、
+ * 既存招待の検索条件にも `used_at is null` を追加した（使用済みなら新規発行に
+ * フォールバックする。これをしないと、既に消費された＝ゲストが参加済みの
+ * トークンを再度案内してしまい、単回消費化の意味が失われるため）。
  *
  * 有効期限: `docs/design/db-design.md` は「例: 作成から24〜48時間」とするのみで
  * 具体値を確定していないため、安全側の24時間をこのタスクの既定値とする。
@@ -73,6 +77,7 @@ export default async function InvitePage({ params }: InvitePageProps) {
     .from("invites")
     .select("token, expires_at")
     .eq("room_id", roomId)
+    .is("used_at", null)
     .gt("expires_at", nowIso)
     .order("created_at", { ascending: false })
     .limit(1)

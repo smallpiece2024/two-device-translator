@@ -16,6 +16,12 @@
  * （`../../api/guest/join/route.ts`）が担う。このページでの照合は「フォームを
  * 見せてよいか」の事前判定のみで、実際の参加処理では再度トークンを照合する
  * （TOCTOU対策。表示から送信までの間に期限切れ・無効化される可能性があるため）。
+ *
+ * 単回消費化（bd-1oy）: `used_at` が設定済み（＝既に消費済み）の招待は
+ * 期限切れ等と同様に無効として扱う。実際の消費（`used_at` の書き込み）は
+ * `POST /api/guest/join` が原子的に行うため、本ページでの `used_at is null`
+ * 判定は「消費済みなら事前にエラー画面を出す」ための読み取り専用チェックに過ぎず、
+ * ここで消費を確定させるものではない。
  */
 import { getSupabaseAdminClient } from "@/lib/supabase/admin";
 import { JoinInviteForm } from "./JoinInviteForm";
@@ -32,6 +38,7 @@ async function isInviteValid(inviteToken: string): Promise<boolean> {
     .from("invites")
     .select("expires_at, room:rooms(status)")
     .eq("token", inviteToken)
+    .is("used_at", null)
     .maybeSingle();
 
   if (error) {
