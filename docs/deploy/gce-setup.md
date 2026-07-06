@@ -288,7 +288,26 @@ sudo systemctl enable caddy
 
 ---
 
-## 6. 動作確認
+## 6. 本番 Supabase Auth の URL 設定（ダッシュボード、一度きり）
+
+Supabase Auth の **Site URL はデフォルトで `http://localhost:3000`** のため、設定しないと
+サインアップ確認メールのリンクが localhost にリダイレクトされる（実デプロイで発覚済み）。
+アプリは `emailRedirectTo` に本番URLを渡しているが、**Redirect URLs の許可リストに無いURLは
+拒否されて Site URL にフォールバック**する仕様のため、両方の設定が必要。
+
+Supabase ダッシュボード → Authentication → URL Configuration:
+
+1. **Site URL**: `https://sallytalk.jp`
+2. **Redirect URLs** に追加:
+   - `https://sallytalk.jp/**`（本番）
+   - `http://localhost:3000/**`（ローカル開発用に残す）
+
+設定前に送信された確認メールのリンクには localhost が焼き込まれているため使えない。
+Authentication → Users で未確認ユーザーを削除し、再度サインアップすること。
+
+---
+
+## 7. 動作確認
 
 ```
 curl -I https://sallytalk.jp
