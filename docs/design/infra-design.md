@@ -15,7 +15,7 @@
 **GCE（Compute Engine）VM 上に Next.js と WSサーバーを常時稼働**し、Caddy（リバースプロキシ＋Let's Encrypt）で HTTPS 終端とパス振り分けを行う（要件§11①）。**Vercel は使わない**（常時接続 WebSocket ＋ ストリーミング STT を維持するため）。
 
 ```text
-[インターネット] ──HTTPS(443)/WSS──▶ GCE VM (e2-micro〜e2-small)
+[インターネット] ──HTTPS(443)/WSS──▶ GCE VM (e2-small)
                                        │
                                        ├─ Caddy (443/80)  ── Let's Encrypt 自動証明書
                                        │    /ws*  → 127.0.0.1:3001   (WebSocket Upgrade 自動処理)
@@ -27,8 +27,21 @@
                                             └─▶ Google Cloud / Supabase / LLM
 ```
 
-- VM サイズ: e2-micro（無料枠）〜 e2-small（約$13/月）（要件§11①）。
 - Next.js・WSサーバーは **127.0.0.1 のみで LISTEN** し外部に直接晒さない。外部公開は Caddy 経由のみ。
+
+### VM スペック（確定・2026-07-06）
+
+| 項目 | 決定 | 根拠 |
+|---|---|---|
+| リージョン | **asia-northeast1（東京）** | 音声ストリーミングの遅延がUXに直結（ユーザーは日本国内）。Supabase（ap-northeast-1）にも近接。無料枠 e2-micro は US リージョン限定のため利用しない |
+| マシンタイプ | **e2-small（2 vCPU 共有 / 2GB）で検証を開始し、必要に応じて e2-medium（4GB）へリサイズ** | 常駐プロセス合計 約600〜900MB（Next.js 200-400MB + WS 100-200MB + Caddy + OS）に対し約1GBの余裕。e2-micro（1GB）は余裕がなく OOM リスク。GCE はマシンタイプ変更が容易（停止→変更→起動）なため、実測で逼迫してから上げる |
+| ディスク | **pd-balanced 20GB** | OS + node_modules + ビルド成果物 + ログで 10GB は手狭。pd-standard との価格差は僅少。pm2-logrotate でログ肥大を防ぐ |
+| 外部IP | **静的 IPv4 を予約してアタッチ** | 独自ドメイン + Let's Encrypt（Caddy）の DNS 安定化に必要。使用中でも課金される（約$0.004/時） |
+| VM 種別 | **通常 VM（Spot 不可）** | Spot は強制終了があり、常時接続 WS + ストリーミング STT と非両立 |
+| OS | Debian 12 または Ubuntu 24.04 LTS | pm2 / Caddy の定番構成 |
+
+- 月額概算（東京、2026-07 時点）: e2-small 約 $15.7 + 使用中外部 IPv4 約 $2.9 + pd-balanced 20GB 約 $2 ≒ **合計約 $21/月**。e2 ファミリーは継続利用割引（SUD）の対象外（確約利用割引 CUD のみ。検証段階では契約しない）。
+- **`next build` を VM 上で実行する場合の注意**: ビルドはピークで 1GB 超のメモリを使うため、e2-small では swap（2GB 以上）を設定するか、CI / ローカルでビルドした成果物（`.next/standalone` / `dist-server/`）を転送する方式を優先する（構築タスク bd-bg3 で確定）。
 
 ---
 
