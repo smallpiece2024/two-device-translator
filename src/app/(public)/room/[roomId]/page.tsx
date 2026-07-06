@@ -23,9 +23,11 @@
  * トークンの署名検証自体は WSサーバー側の責務であり、ここでは値の受け渡しのみ行う。
  */
 import { cookies } from "next/headers";
-import { GUEST_COOKIE_NAME } from "@shared/auth/guestToken";
+import { GUEST_COOKIE_NAME, verifyGuestToken } from "@shared/auth/guestToken";
+import { SUPPORTED_LANGUAGES, type SupportedLanguage } from "@shared/index";
 import { createClient } from "@/lib/supabase/server";
-import { JoinForm } from "./JoinForm";
+import { getSupabaseAdminClient } from "@/lib/supabase/admin";
+import { JoinForm, type GuestProfile } from "./JoinForm";
 
 const DEFAULT_WS_URL = "ws://localhost:3001/ws";
 
@@ -71,12 +73,59 @@ export default async function RoomPage({ params }: RoomPageProps) {
     }
   }
 
+  // ゲストのプロフィール解決（bd-1is）: `/join/[inviteToken]` で入力済みの
+  // 表示名・言語を participants 行から取得し、ルーム側での再入力（JoinForm）を
+  // スキップする。クッキーの JWT を検証し、roomId の一致する participants 行が
+  // 実在する場合のみプロフィールを渡す（行の取得は RLS 上ゲストに select 権限が
+  // 無いため管理者クライアントで行う。取得するのは表示名・言語の2項目のみ）。
+  let guestProfile: GuestProfile | undefined;
+  if (!ownerToken && guestToken) {
+    try {
+      const payload = await verifyGuestToken(guestToken);
+      if (payload && payload.roomId === roomId) {
+        const admin = getSupabaseAdminClient();
+        const { data: participant, error: participantError } = await admin
+          .from("participants")
+          .select("display_name, language")
+          .eq("id", payload.participantId)
+          .eq("room_id", roomId)
+          .maybeSingle();
+
+        if (participantError) {
+          console.error(
+            "[RoomPage] failed to load guest participant profile",
+            participantError.message
+          );
+        }
+        if (participant) {
+          const language = (SUPPORTED_LANGUAGES as readonly string[]).includes(
+            participant.language as string
+          )
+            ? (participant.language as SupportedLanguage)
+            : "en-US";
+          guestProfile = {
+            displayName: (participant.display_name as string | null) ?? undefined,
+            language,
+          };
+        }
+      }
+    } catch (err) {
+      // GUEST_COOKIE_SECRET / SUPABASE_* 未設定などの構成不備時はフォーム表示に
+      // フォールバックする（dev/E2E の insecure 環境を壊さない）。
+      console.error(
+        "[RoomPage] guest profile resolution unavailable:",
+        err instanceof Error ? err.message : String(err)
+      );
+    }
+  }
+
   return (
     <JoinForm
       roomId={roomId}
       wsUrl={wsUrl}
       ownerToken={ownerToken}
       guestToken={ownerToken ? undefined : guestToken}
+      guestProfile={guestProfile}
     />
   );
 }

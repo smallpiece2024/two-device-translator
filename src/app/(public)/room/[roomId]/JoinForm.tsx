@@ -28,6 +28,16 @@ import { LanguageSelector } from "@/components/LanguageSelector/LanguageSelector
 import { RoomClient } from "./RoomClient";
 import styles from "./JoinForm.module.css";
 
+/**
+ * ゲストの参加時プロフィール（`/join/[inviteToken]` で入力済みの表示名・言語）。
+ * Server Component がクッキー検証+participants 行の照合に成功した場合のみ渡され、
+ * 入力フォームをスキップして直接入室する（bd-1is: 名前の二重入力解消）。
+ */
+export interface GuestProfile {
+  displayName?: string;
+  language: SupportedLanguage;
+}
+
 export interface JoinFormProps {
   roomId: string;
   wsUrl: string;
@@ -38,6 +48,8 @@ export interface JoinFormProps {
   ownerToken?: string;
   /** `gtt_guest` クッキーがあれば渡される（`RoomClient` へそのまま中継する）。 */
   guestToken?: string;
+  /** ゲストの参加時プロフィール。guestToken とセットで渡されるとフォームをスキップする。 */
+  guestProfile?: GuestProfile;
 }
 
 type RoomRole = "owner" | "guest";
@@ -50,8 +62,24 @@ interface JoinConfig {
 
 const DEFAULT_LANGUAGE: SupportedLanguage = "ja-JP";
 
-export function JoinForm({ roomId, wsUrl, ownerToken, guestToken }: JoinFormProps) {
-  const [config, setConfig] = useState<JoinConfig | null>(null);
+export function JoinForm({
+  roomId,
+  wsUrl,
+  ownerToken,
+  guestToken,
+  guestProfile,
+}: JoinFormProps) {
+  // guestToken + guestProfile が揃っている場合は `/join/[inviteToken]` で
+  // 入力済みのため、フォームをスキップして直接入室する（bd-1is）。
+  const [config, setConfig] = useState<JoinConfig | null>(
+    guestToken && guestProfile
+      ? {
+          displayName: guestProfile.displayName ?? "",
+          language: guestProfile.language,
+          role: "guest",
+        }
+      : null
+  );
   const [displayName, setDisplayName] = useState("");
   const [language, setLanguage] = useState<SupportedLanguage>(DEFAULT_LANGUAGE);
   const [role, setRole] = useState<RoomRole>("guest");

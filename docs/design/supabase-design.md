@@ -137,6 +137,7 @@ service_role キーは **RLS をバイパス**するため、露出すると全�
 |---|---|
 | WSサーバー `server/db/supabaseAdmin.ts` | 確定発話の `messages` 書き込み、`summaries` 書き込み、`rooms.status`/`participants.present` 更新、`join` 時の token 検証（`auth.getUser`） |
 | Route Handler `POST /api/guest/join` | ゲスト `participants` 行作成（ゲストは Supabase セッションを持たないため）。実装は `src/lib/supabase/admin.ts`（`import "server-only"` 必須。CIの静的ガードが担保） |
+| Server Component `/room/[roomId]` | ゲストの参加時プロフィール（`participants.display_name` / `language` の2項目のみ）の読み取り（bd-1is: 名前の二重入力解消）。ゲストJWT検証＋`roomId` 一致確認を通過した `participantId` の行に限定（RLS上ゲストは `participants` を select できないため service_role で読む） |
 
 - オーナー由来の通常操作（ルーム作成・一覧・履歴閲覧）は **service_role を使わず**、ユーザーセッション＋RLS で行う（最小権限）。
 - service_role の使用はコードレビューで棚卸しする（[security-design.md](./security-design.md#脆弱性対策owasp準拠の要点) 参照）。
