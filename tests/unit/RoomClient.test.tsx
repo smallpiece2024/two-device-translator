@@ -635,7 +635,7 @@ describe("RoomClient", () => {
       const inviteLink = screen.getByRole("link", {
         name: "招待QRを表示（新しいタブで開く）",
       });
-      expect(inviteLink).toHaveAttribute("href", "/rooms/room-abc/invite");
+      expect(inviteLink).toHaveAttribute("href", "/rooms/room-abc/invite?from=room");
       expect(inviteLink).toHaveAttribute("target", "_blank");
       // タブナビング防止（セキュリティ属性の回帰ガード、レビュー指摘）
       expect(inviteLink).toHaveAttribute("rel", "noopener noreferrer");

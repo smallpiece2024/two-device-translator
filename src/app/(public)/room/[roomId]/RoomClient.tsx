@@ -512,7 +512,7 @@ export function RoomClient({
           {/* 新規タブで開くことでWS接続（入室状態）を維持したままQRを提示できる
               （bd-hue。ルーム内モーダル化は将来の改善候補）。 */}
           <a
-            href={`/rooms/${roomId}/invite`}
+            href={`/rooms/${roomId}/invite?from=room`}
             target="_blank"
             rel="noopener noreferrer"
             aria-label="招待QRを表示（新しいタブで開く）"
