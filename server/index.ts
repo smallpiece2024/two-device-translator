@@ -126,18 +126,21 @@ function routeCommittedUtterance(
 }
 
 /**
- * 言語検出モード（FR-4.3・D-9）で話者言語が確定した際、ルーム内の全参加者
- * （本人含む）へ `participant_updated` を配信する。
- * ルームが既に存在しない場合は何もしない（docs/design/websocket-protocol.md
- * 「参加者イベント」参照）。
+ * 参加者の現在の displayName/language を、ルーム内の全参加者
+ * （本人含む）へ `participant_updated` として配信する共通処理。
+ *
+ * 発火契機は (1) 言語検出モード（FR-4.3・D-9）での言語確定、(2)
+ * `update_settings`（bd-fki）での明示的な language/displayName 変更の2つ
+ * （docs/design/websocket-protocol.md「参加者イベント」「`participant_updated`
+ * の配信範囲（bd-ecb で確定）」参照）。ルームが既に存在しない場合は何もしない。
  */
-function broadcastLanguageDetected(room: Room, speakerSession: Session): void {
+function broadcastParticipantUpdated(room: Room, targetSession: Session): void {
   for (const participant of room.participants.values()) {
     participant.send({
       type: "participant_updated",
-      participantId: speakerSession.participantId,
-      displayName: speakerSession.displayName,
-      language: speakerSession.language,
+      participantId: targetSession.participantId,
+      displayName: targetSession.displayName,
+      language: targetSession.language,
     });
   }
 }
@@ -375,6 +378,68 @@ export function startServer(
       switch (message.type) {
         case "update_settings": {
           session.enableTts = message.enableTts;
+
+          // language/displayName は bd-fki で追加した Phase2 拡張（任意項目）。
+          // 指定がなければ変更しない。録音中の言語変更は STT ストリームを
+          // 張り替えず、次の `start` から反映する（プロトタイプ方針を継承、
+          // docs/design/websocket-protocol.md「update_settings（設定変更）」参照）。
+          // ここで更新した `session.language` は、次回発話の翻訳ルーティング
+          // （`toRoutingParticipant` 経由で聞き手の言語として参照される）には
+          // 即座に反映される。
+          let changed = false;
+
+          // 録音中（`session.isRecording`）は language の変更を無視する
+          // （コードレビュー should-fix）。FE は録音中 UI を disabled にする想定だが、
+          // 逸脱クライアント（改造クライアント・実装バグ等）が録音中に language を
+          // 送ってきた場合、STT は旧言語のまま認識を継続するにもかかわらず
+          // `session.language` だけが新言語に切り替わってしまうと、直後に確定する
+          // 発話（旧言語で認識済みのテキスト）が新言語を sourceLanguage として
+          // 誤翻訳される事故になり得る。サーバー側でも防御し、変更は次の
+          // `start`（STT再起動）まで据え置く。エラー応答は不要（黙って無視する）。
+          if (message.language !== undefined && message.language !== session.language) {
+            if (session.isRecording) {
+              console.warn(
+                `[WS Server] update_settings: ignoring language change during recording (participantId=${session.participantId})`,
+              );
+            } else {
+              session.language = message.language;
+              changed = true;
+            }
+          }
+
+          // displayName が trim 後に空文字の場合は「変更なし」として無視する
+          // （コードレビュー should-fix）。参加後に表示名を空文字へ変更できてしまうと
+          // タイムライン等の話者表示が崩れるため、空文字は許可しない
+          // （「空にしたい」という仕様要件は現状ない。フォーム側のバリデーションのみに
+          // 頼らずサーバー側でも防御する）。
+          if (
+            message.displayName !== undefined &&
+            message.displayName.trim().length > 0 &&
+            message.displayName !== session.displayName
+          ) {
+            session.displayName = message.displayName;
+            changed = true;
+          }
+
+          // 変更があった場合のみ、本人を含む全参加者へ participant_updated を
+          // 配信する（`participant_joined`/`participant_left` と異なり、本人にも
+          // 送る設計判断。docs/design/websocket-protocol.md「参加者イベント」
+          // 「`participant_updated` の配信範囲（bd-ecb で確定）」参照）。
+          //
+          // DB（`participants.display_name`/`language`）は更新しない: bd-e3p の
+          // `verifyParticipant.ts` と同じ方針（このファイルの
+          // `resolveOwnerParticipantId`/`verifyGuestJoin` のコメント参照）で、
+          // これらは接続のたびに変わりうる値としてメモリ状態のみを正とする。
+          // db-design.md/supabase-design.md にも「設定変更時の participants 行
+          // 更新」の定義は無く、現時点で永続化が必要という要件もないため、
+          // 過剰実装を避けメモリ更新のみに留める（bd-fki 実装時点の判断。
+          // 必要になれば別タスクで追加する）。
+          if (changed && roomId) {
+            const room = roomManager.getRoom(roomId);
+            if (room) {
+              broadcastParticipantUpdated(room, session);
+            }
+          }
           return;
         }
 
@@ -399,7 +464,7 @@ export function startServer(
               if (!room) {
                 return;
               }
-              broadcastLanguageDetected(room, session);
+              broadcastParticipantUpdated(room, session);
             },
           });
           return;

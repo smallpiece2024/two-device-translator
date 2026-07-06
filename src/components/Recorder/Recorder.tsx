@@ -13,7 +13,8 @@
  *   しきい値設定を含む）。
  * - 停止: `stop` 送信 → MediaRecorder 停止・トラック解放。
  * - 手動で発話を区切る: `commit` 送信。
- * - 言語検出モードトグル（FR-4.3）は Phase2 のため UI のみ用意し disabled にする。
+ * - 言語検出モードトグル（FR-4.3）は `SettingsPanel` が担当し、本コンポーネントは
+ *   `detectLanguage` prop を受け取って `start` に反映するのみ（bd-fki で移管）。
  *
  * このコンポーネントは RoomClient への結線を行わない（並行タスクとの衝突防止）。
  * 呼び出し側が `sendMessage` で WS 送信を担い、`disabled` で外部状態（未接続等）
@@ -45,6 +46,12 @@ export interface RecorderProps {
   disabled?: boolean;
   /** 自分が聞き手として TTS を受け取るか（`start.enableTts`）。既定 true */
   enableTts?: boolean;
+  /**
+   * 言語検出モード（FR-4.3、`start.detectLanguage`）。トグルUIは
+   * `SettingsPanel` が担い、本コンポーネントは値を受け取って次の `start` に
+   * 反映するのみ。既定 false。
+   */
+  detectLanguage?: boolean;
   /** 録音チャンク送信間隔（ms）。既定 `DEFAULT_CHUNK_MS` */
   chunkMs?: number;
   /** 発話区切り: 無音しきい値（ms）。既定 `DEFAULT_SILENCE_MS` */
@@ -80,6 +87,7 @@ export function Recorder({
   sendMessage,
   disabled = false,
   enableTts = true,
+  detectLanguage = false,
   chunkMs = DEFAULT_CHUNK_MS,
   silenceMs = DEFAULT_SILENCE_MS,
   maxChars = DEFAULT_MAX_CHARS,
@@ -89,8 +97,6 @@ export function Recorder({
 }: RecorderProps) {
   const [status, setStatus] = useState<RecorderStatus>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  /** 言語検出モードトグル（Phase2 のため UI のみ・常に false で送信） */
-  const [detectLanguage, setDetectLanguage] = useState(false);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -199,7 +205,7 @@ export function Recorder({
     sendMessageRef.current({
       type: "start",
       sourceLanguage: language,
-      detectLanguage: false,
+      detectLanguage,
       enableTts,
       chunkMs,
       silenceMs,
@@ -209,7 +215,17 @@ export function Recorder({
 
     setErrorMessage(null);
     setStatus("recording");
-  }, [disabled, status, language, enableTts, chunkMs, silenceMs, maxChars, maxSeconds]);
+  }, [
+    disabled,
+    status,
+    language,
+    detectLanguage,
+    enableTts,
+    chunkMs,
+    silenceMs,
+    maxChars,
+    maxSeconds,
+  ]);
 
   const handleStop = useCallback(() => {
     if (status !== "recording") return;
@@ -287,17 +303,6 @@ export function Recorder({
           手動で発話を区切る
         </button>
       </div>
-
-      <label className={styles.detectLanguageToggle}>
-        <input
-          type="checkbox"
-          checked={detectLanguage}
-          onChange={(e) => setDetectLanguage(e.target.checked)}
-          disabled
-          aria-label="言語検出モード（Phase2で有効化予定）"
-        />
-        言語検出モード（近日公開）
-      </label>
     </div>
   );
 }

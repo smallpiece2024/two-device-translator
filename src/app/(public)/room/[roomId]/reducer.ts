@@ -13,6 +13,7 @@ import type {
   MessageMessage,
   ParticipantSummary,
   RoomEndedReason,
+  SupportedLanguage,
 } from "@shared/index";
 
 /** 画面全体の接続・録音状態 */
@@ -67,7 +68,20 @@ export type RoomAction =
     }
   | { type: "PARTICIPANT_JOINED"; participant: ParticipantView }
   | { type: "PARTICIPANT_LEFT"; participantId: string }
-  | { type: "PARTICIPANT_UPDATED"; participant: ParticipantView }
+  /**
+   * `participant_updated`（bd-ecb/bd-fki）の反映。サーバーからのペイロードは
+   * `participantSummarySchema` の全項目（role/present含む）ではなく
+   * `participantId`/`language`/`displayName`(optional) のみのため、
+   * 既存の参加者一覧の該当エントリへ**マージ**する形にする（role/present は
+   * 既存値を維持。`displayName` 省略時も既存値を維持、
+   * `docs/design/websocket-protocol.md` `participant_updated` 節参照）。
+   */
+  | {
+      type: "PARTICIPANT_UPDATED";
+      participantId: string;
+      language: SupportedLanguage;
+      displayName?: string;
+    }
   | { type: "INTERIM"; text: string }
   | { type: "MESSAGE"; message: MessageView }
   | { type: "IDLE_HINT" }
@@ -134,7 +148,13 @@ export function roomReducer(state: RoomState, action: RoomAction): RoomState {
       return {
         ...state,
         participants: state.participants.map((p) =>
-          p.participantId === action.participant.participantId ? action.participant : p,
+          p.participantId === action.participantId
+            ? {
+                ...p,
+                language: action.language,
+                displayName: action.displayName ?? p.displayName,
+              }
+            : p,
         ),
       };
 

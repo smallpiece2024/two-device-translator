@@ -394,19 +394,85 @@ describe("roomReducer", () => {
       expect(state.participants).toEqual([participantA]);
     });
 
-    it("PARTICIPANT_UPDATED で該当participantを新しい内容に置き換える", () => {
-      const withA = roomReducer(initialRoomState, {
-        type: "PARTICIPANT_JOINED",
-        participant: participantA,
+    /**
+     * bd-fki: `participant_updated` のペイロードは `participantId`/`language`/
+     * `displayName`(optional) のみ（role/present を含まない）ため、reducer 側は
+     * 該当participantへ**マージ**する（role/present は既存値を維持、
+     * `displayName` 省略時も既存値を維持、`docs/design/websocket-protocol.md`
+     * `participant_updated` 節参照）。
+     */
+    describe("PARTICIPANT_UPDATED（bd-fki: マージ方式）", () => {
+      it("language を更新しつつ role/present は既存値を維持する", () => {
+        const withA = roomReducer(initialRoomState, {
+          type: "PARTICIPANT_JOINED",
+          participant: participantA,
+        });
+
+        const state = roomReducer(withA, {
+          type: "PARTICIPANT_UPDATED",
+          participantId: "p1",
+          language: "en-US",
+          displayName: "たろう",
+        });
+
+        expect(state.participants).toEqual([
+          { ...participantA, language: "en-US", displayName: "たろう" },
+        ]);
       });
 
-      const updatedA = { ...participantA, language: "en-US" };
-      const state = roomReducer(withA, {
-        type: "PARTICIPANT_UPDATED",
-        participant: updatedA,
+      it("displayName 省略時は既存の displayName を維持する", () => {
+        const participantWithName = { ...participantA, displayName: "元の名前" };
+        const withA = roomReducer(initialRoomState, {
+          type: "PARTICIPANT_JOINED",
+          participant: participantWithName,
+        });
+
+        const state = roomReducer(withA, {
+          type: "PARTICIPANT_UPDATED",
+          participantId: "p1",
+          language: "en-US",
+        });
+
+        expect(state.participants).toEqual([
+          { ...participantWithName, language: "en-US" },
+        ]);
       });
 
-      expect(state.participants).toEqual([updatedA]);
+      it("該当participantIdが存在しない場合は participants を変更しない", () => {
+        const withA = roomReducer(initialRoomState, {
+          type: "PARTICIPANT_JOINED",
+          participant: participantA,
+        });
+
+        const state = roomReducer(withA, {
+          type: "PARTICIPANT_UPDATED",
+          participantId: "unknown",
+          language: "en-US",
+        });
+
+        expect(state.participants).toEqual([participantA]);
+      });
+
+      it("複数参加者中、該当participantのみを更新し他は変更しない", () => {
+        const withBoth = roomReducer(
+          roomReducer(initialRoomState, {
+            type: "PARTICIPANT_JOINED",
+            participant: participantA,
+          }),
+          { type: "PARTICIPANT_JOINED", participant: participantB },
+        );
+
+        const state = roomReducer(withBoth, {
+          type: "PARTICIPANT_UPDATED",
+          participantId: "p2",
+          language: "ja-JP",
+        });
+
+        expect(state.participants).toEqual([
+          participantA,
+          { ...participantB, language: "ja-JP" },
+        ]);
+      });
     });
 
     it("IDLE_HINT で idleHint を true にする", () => {

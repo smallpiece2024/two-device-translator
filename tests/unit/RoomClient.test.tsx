@@ -679,4 +679,271 @@ describe("RoomClient", () => {
       expect(sent.some((m) => m.type === "stop")).toBe(true);
     });
   });
+
+  /**
+   * bd-fki: SettingsPanel（表示名・言語・言語検出トグル）の結線テスト。
+   *
+   * - 言語変更 → `update_settings{enableTts, language}` を送信する
+   * - 表示名確定（blur） → `update_settings{enableTts, displayName}` を送信する
+   * - 検出トグルON → WS送信はせず、次の `start` に `detectLanguage:true` が載る
+   * - `participant_updated`（自分宛） → PARTICIPANT_UPDATED dispatch・言語表示を
+   *   検出結果に同期・検出トグルを自動OFFに戻す
+   * - `participant_updated`（他人宛） → 自分の言語表示・検出トグルは変わらない
+   *   （参加者一覧の言語更新のみ、reducer側で検証済み）
+   */
+  describe("SettingsPanel結線（bd-fki: language/displayName/detectLanguage）", () => {
+    interface JoinParticipant {
+      participantId: string;
+      role: "owner" | "guest";
+      language: "ja-JP" | "en-US";
+      present: boolean;
+    }
+
+    function joinRoom(socket: MockWebSocket, participants: JoinParticipant[] = []) {
+      socket.dispatchOpen();
+      socket.dispatchMessage({
+        type: "joined",
+        participantId: "p1",
+        room: { id: "room-abc", status: "active" },
+        participants,
+        recentMessages: [],
+      });
+    }
+
+    it("言語を変更するとupdate_settingsメッセージ(enableTts, language)がWS送信される", async () => {
+      const user = userEvent.setup({
+        advanceTimers: (ms) => {
+          jest.advanceTimersByTime(ms);
+        },
+      });
+      render(<RoomClient roomId="room-abc" wsUrl="ws://localhost:3001/ws" language="ja-JP" />);
+      const socket = latestSocket();
+
+      act(() => {
+        joinRoom(socket);
+      });
+
+      await user.selectOptions(screen.getByRole("combobox", { name: "話す言語" }), "en-US");
+
+      const sent = socket.getSentMessages();
+      const updateSettingsMessages = sent.filter((m) => m.type === "update_settings");
+      expect(updateSettingsMessages).toHaveLength(1);
+      expect(updateSettingsMessages[0]).toMatchObject({
+        type: "update_settings",
+        enableTts: true,
+        language: "en-US",
+      });
+    });
+
+    it("表示名を編集してblurするとupdate_settingsメッセージ(enableTts, displayName)がWS送信される", async () => {
+      const user = userEvent.setup({
+        advanceTimers: (ms) => {
+          jest.advanceTimersByTime(ms);
+        },
+      });
+      render(
+        <RoomClient
+          roomId="room-abc"
+          wsUrl="ws://localhost:3001/ws"
+          displayName="たろう"
+        />,
+      );
+      const socket = latestSocket();
+
+      act(() => {
+        joinRoom(socket);
+      });
+
+      const nameInput = screen.getByLabelText("表示名");
+      await user.clear(nameInput);
+      await user.type(nameInput, "じろう");
+      await user.tab();
+
+      const sent = socket.getSentMessages();
+      const updateSettingsMessages = sent.filter((m) => m.type === "update_settings");
+      expect(updateSettingsMessages).toHaveLength(1);
+      expect(updateSettingsMessages[0]).toMatchObject({
+        type: "update_settings",
+        enableTts: true,
+        displayName: "じろう",
+      });
+    });
+
+    it("検出トグルをONにしてもWS送信は発生しないが、次のstartメッセージにdetectLanguage:trueが載る", async () => {
+      const user = userEvent.setup({
+        advanceTimers: (ms) => {
+          jest.advanceTimersByTime(ms);
+        },
+      });
+      const getUserMediaMock = jest.fn().mockResolvedValue({
+        getTracks: () => [{ stop: jest.fn() }],
+      });
+      Object.defineProperty(navigator, "mediaDevices", {
+        value: { getUserMedia: getUserMediaMock },
+        configurable: true,
+      });
+
+      class MockMediaRecorder {
+        static isTypeSupported(): boolean {
+          return false;
+        }
+        state = "inactive";
+        ondataavailable: ((event: unknown) => void) | null = null;
+        start(): void {
+          this.state = "recording";
+        }
+        stop(): void {
+          this.state = "inactive";
+        }
+      }
+      // @ts-expect-error jsdom には MediaRecorder が存在しないためモックで上書きする
+      globalThis.MediaRecorder = MockMediaRecorder;
+
+      render(<RoomClient roomId="room-abc" wsUrl="ws://localhost:3001/ws" />);
+      const socket = latestSocket();
+
+      act(() => {
+        joinRoom(socket);
+      });
+
+      await user.click(screen.getByRole("checkbox", { name: /言語検出モード/ }));
+
+      // 検出トグルON操作自体はWS送信を伴わない
+      expect(socket.getSentMessages().some((m) => m.type === "update_settings")).toBe(false);
+
+      await user.click(screen.getByRole("button", { name: "開始" }));
+
+      await waitFor(() => {
+        expect(socket.getSentMessages().some((m) => m.type === "start")).toBe(true);
+      });
+
+      const startMessage = socket.getSentMessages().find((m) => m.type === "start");
+      expect(startMessage).toMatchObject({ type: "start", detectLanguage: true });
+    });
+
+    it("participant_updated（自分宛）を受信すると検出トグルが自動OFFになり、言語表示が同期される", async () => {
+      const user = userEvent.setup({
+        advanceTimers: (ms) => {
+          jest.advanceTimersByTime(ms);
+        },
+      });
+      render(<RoomClient roomId="room-abc" wsUrl="ws://localhost:3001/ws" language="ja-JP" />);
+      const socket = latestSocket();
+
+      act(() => {
+        joinRoom(socket, [
+          { participantId: "p1", role: "guest", language: "ja-JP", present: true },
+        ]);
+      });
+
+      await user.click(screen.getByRole("checkbox", { name: /言語検出モード/ }));
+      expect(screen.getByRole("checkbox", { name: /言語検出モード/ })).toBeChecked();
+
+      act(() => {
+        socket.dispatchMessage({
+          type: "participant_updated",
+          participantId: "p1",
+          language: "en-US",
+        });
+      });
+
+      expect(screen.getByRole("checkbox", { name: /言語検出モード/ })).not.toBeChecked();
+      expect(screen.getByRole("combobox", { name: "話す言語" })).toHaveValue("en-US");
+    });
+
+    it("participant_updated（他人宛）を受信しても自分の言語表示・検出トグルは変わらない", async () => {
+      const user = userEvent.setup({
+        advanceTimers: (ms) => {
+          jest.advanceTimersByTime(ms);
+        },
+      });
+      render(<RoomClient roomId="room-abc" wsUrl="ws://localhost:3001/ws" language="ja-JP" />);
+      const socket = latestSocket();
+
+      act(() => {
+        joinRoom(socket, [
+          { participantId: "p1", role: "guest", language: "ja-JP", present: true },
+          { participantId: "p2", role: "owner", language: "en-US", present: true },
+        ]);
+      });
+
+      await user.click(screen.getByRole("checkbox", { name: /言語検出モード/ }));
+      expect(screen.getByRole("checkbox", { name: /言語検出モード/ })).toBeChecked();
+
+      act(() => {
+        socket.dispatchMessage({
+          type: "participant_updated",
+          participantId: "p2",
+          language: "ja-JP",
+        });
+      });
+
+      // 自分(p1)宛てではないため、検出トグル・言語表示は変わらない
+      expect(screen.getByRole("checkbox", { name: /言語検出モード/ })).toBeChecked();
+      expect(screen.getByRole("combobox", { name: "話す言語" })).toHaveValue("ja-JP");
+    });
+
+    /**
+     * レビュー対応（must-fix回帰ガード）: 再接続時の join メッセージが
+     * join用propsの初期値のまま送られると、SettingsPanelで変更した言語・
+     * 表示名が再接続の度に巻き戻ってしまう不具合の回帰防止テスト。
+     * `RoomClient.tsx` の join送信は `currentLanguageRef`/`currentDisplayNameRef`
+     * （SettingsPanel操作で更新される最新値）を参照する契約になっている。
+     */
+    it("言語・表示名を変更後、close→自動再接続すると再送されるjoinに最新のlanguage/displayNameが載る", async () => {
+      const user = userEvent.setup({
+        advanceTimers: (ms) => {
+          jest.advanceTimersByTime(ms);
+        },
+      });
+      render(
+        <RoomClient
+          roomId="room-abc"
+          wsUrl="ws://localhost:3001/ws"
+          language="ja-JP"
+          displayName="たろう"
+        />,
+      );
+      const firstSocket = latestSocket();
+
+      act(() => {
+        joinRoom(firstSocket);
+      });
+
+      await user.selectOptions(screen.getByRole("combobox", { name: "話す言語" }), "en-US");
+
+      const nameInput = screen.getByLabelText("表示名");
+      await user.clear(nameInput);
+      await user.type(nameInput, "じろう");
+      await user.tab();
+
+      // サーバー側切断（fatalではない）→ 自動再接続がスケジュールされる
+      act(() => {
+        firstSocket.dispatchClose();
+      });
+
+      // バックオフ（BASE_RECONNECT_DELAY_MS=500ms、初回attempt=0）経過で再接続
+      act(() => {
+        jest.advanceTimersByTime(500);
+      });
+
+      const secondSocket = latestSocket();
+      expect(secondSocket).not.toBe(firstSocket);
+
+      act(() => {
+        secondSocket.dispatchOpen();
+      });
+
+      const sent = secondSocket.getSentMessages();
+      const joinMessage = sent.find((m) => m.type === "join");
+      expect(joinMessage).toBeDefined();
+      // 初期props値（language="ja-JP", displayName="たろう"）ではなく、
+      // SettingsPanelで変更した最新値が再接続時のjoinに載ること。
+      expect(joinMessage).toMatchObject({
+        type: "join",
+        language: "en-US",
+        displayName: "じろう",
+      });
+    });
+  });
 });

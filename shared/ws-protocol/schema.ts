@@ -9,7 +9,8 @@
  * message / audio / error）に加え、Phase2 の一部
  * （update_settings, participant_joined/left, request_end, room_ended,
  * participant_updated）を定義する（bd-e3p で request_end / room_ended を追加。
- * bd-ecb で言語検出モード確定通知の participant_updated を追加）。Phase3 の
+ * bd-ecb で言語検出モード確定通知の participant_updated を追加。bd-fki で
+ * update_settings に language/displayName を追加）。Phase3 の
  * メッセージ（idle_hint, summary 等）は将来追加する。`z.discriminatedUnion` は
  * 配列へスキーマを追加するだけで拡張できるため、追加を阻害しない設計になっている。
  *
@@ -34,10 +35,17 @@ export const joinSchema = z.object({
   enableTts: z.boolean().optional().default(true),
 });
 
-/** TTS等の設定更新（将来 language/displayName 等の項目追加を見込む） */
+/**
+ * 設定変更通知（bd-fki で language/displayName を Phase2 拡張として追加）。
+ * `enableTts` は Phase1 から必須（既存の後方互換を維持）。`language`/
+ * `displayName` は任意項目とし、指定がなければ変更しない
+ * （docs/design/websocket-protocol.md「update_settings（設定変更）」参照）。
+ */
 export const updateSettingsSchema = z.object({
   type: z.literal("update_settings"),
   enableTts: z.boolean(),
+  language: LanguageEnum.optional(),
+  displayName: z.string().max(50).optional(),
 });
 
 /** 録音セッション開始 */
@@ -188,10 +196,13 @@ export const participantLeftSchema = z.object({
 });
 
 /**
- * 参加者の設定変更イベント（bd-ecb で言語検出モード確定通知として追加）。
- * 現時点では言語検出モード（FR-4.3・D-9）が最初の final で話者言語を確定した際に、
- * 全参加者（本人含む）へ配信する。`displayName` は変更がない場合も含めて
- * 常に現在値を載せる（websocket-protocol.md「参加者イベント」参照）。
+ * 参加者の設定変更イベント（bd-ecb で言語検出モード確定通知として追加。
+ * bd-fki で `update_settings` による言語・表示名の明示変更にも使うよう拡張）。
+ * 発火契機は (1) 言語検出モード（FR-4.3・D-9）が最初の final で話者言語を
+ * 確定した場合、(2) `update_settings` で language/displayName が変更された
+ * 場合の2つ。どちらも本人を含む全参加者へ配信する。`displayName` は変更が
+ * ない場合も含めて常に現在値を載せる（websocket-protocol.md「参加者イベント」
+ * 「`participant_updated` の配信範囲（bd-ecb で確定）」参照）。
  */
 export const participantUpdatedSchema = z.object({
   type: z.literal("participant_updated"),

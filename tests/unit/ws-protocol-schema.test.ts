@@ -315,6 +315,38 @@ describe("ws-protocol schema", () => {
       const input = { type: "update_settings", enableTts: "false" };
       expect(() => clientMessageSchema.parse(input)).toThrow();
     });
+
+    /**
+     * bd-fki: updateSettingsSchema に追加された language/displayName の境界値テスト
+     * （テストレビュー should-fix: 個別スキーマの境界値検証を追加）。
+     */
+    it("update_settings: language 付きの正しい形をparseできる", () => {
+      const input = { type: "update_settings", enableTts: true, language: "en-US" };
+      expect(updateSettingsSchema.parse(input)).toEqual(input);
+    });
+
+    it("update_settings: displayName がちょうど50文字なら許可する", () => {
+      const input = {
+        type: "update_settings",
+        enableTts: true,
+        displayName: "a".repeat(50),
+      };
+      expect(() => updateSettingsSchema.parse(input)).not.toThrow();
+    });
+
+    it("update_settings: displayName が51文字の場合は拒否する", () => {
+      const input = {
+        type: "update_settings",
+        enableTts: true,
+        displayName: "a".repeat(51),
+      };
+      expect(() => updateSettingsSchema.parse(input)).toThrow();
+    });
+
+    it("update_settings: language が未対応言語コード('fr-FR')の場合は拒否する", () => {
+      const input = { type: "update_settings", enableTts: true, language: "fr-FR" };
+      expect(() => updateSettingsSchema.parse(input)).toThrow();
+    });
   });
 
   describe("clientMessageSchema: 異常系（type不正・未実装）", () => {

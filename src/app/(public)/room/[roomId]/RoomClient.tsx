@@ -5,8 +5,8 @@
  *
  * Phase1 スコープ: WS 接続確立 → `join` 送信 → `joined` 受信で状態初期化、
  * reducer による状態管理、および各UIコンポーネント（ChatTimeline / Recorder /
- * LanguageSelector / TTSToggle / audioPlaybackQueue）の結線を担う
- * （`docs/design/frontend-design.md` 参照）。
+ * SettingsPanel(LanguageSelector・TTSToggle・言語検出トグル・表示名) /
+ * audioPlaybackQueue）の結線を担う（`docs/design/frontend-design.md` 参照）。
  *
  * 認可チェックは Phase2 の範囲（`docs/design/security-design.md` Phase1行）
  * のため、このタスクでは token を仮発行して誰でも入室できる簡易動作とする。
@@ -20,8 +20,7 @@ import {
 } from "@shared/index";
 import { ChatTimeline } from "@/components/ChatTimeline/ChatTimeline";
 import { Recorder, type RecorderStatus } from "@/components/Recorder/Recorder";
-import { LanguageSelector } from "@/components/LanguageSelector/LanguageSelector";
-import { TTSToggle } from "@/components/TTSToggle/TTSToggle";
+import { SettingsPanel } from "@/components/SettingsPanel/SettingsPanel";
 import { createAudioPlaybackQueue, type AudioPlaybackQueue } from "@/lib/audioPlaybackQueue";
 import { initialRoomState, roomReducer, toMessageView, type AppStatus } from "./reducer";
 import styles from "./RoomClient.module.css";
@@ -70,6 +69,27 @@ export function RoomClient({
   // 自分が聞き手としてTTSを受け取るかどうか（`start.enableTts` および
   // audioPlaybackQueue の再生可否の両方に連動する）。
   const [ttsEnabled, setTtsEnabled] = useState(true);
+  // 表示名（`update_settings.displayName`、SettingsPanel から確定操作で変更）。
+  // join 用の `displayName` prop とは独立させ、再接続時も join 用の初期値では
+  // なくローカルで保持している最新値を使う（ttsEnabled と同様のパターン）。
+  const [currentDisplayName, setCurrentDisplayName] = useState<string | undefined>(displayName);
+  // 再接続時の `join` 送信は effect のクロージャ内（マウント時に一度だけ構築）
+  // で行われるため、`currentDisplayName`/`currentLanguage` の state 変更を
+  // その場で読み取れない（stale closure）。サーバー（roomManager）は再接続joinの
+  // 値で表示名・言語を上書きする契約のため、SettingsPanelでの変更後に自動
+  // 再接続が走ると設定が初期値へ巻き戻ってしまう。`ttsEnabledRef` と同じ
+  // パターンで最新値を ref に同期し、join 組み立て時に ref 経由で参照する。
+  const currentDisplayNameRef = useRef(currentDisplayName);
+  const currentLanguageRef = useRef(currentLanguage);
+  useEffect(() => {
+    currentDisplayNameRef.current = currentDisplayName;
+  }, [currentDisplayName]);
+  useEffect(() => {
+    currentLanguageRef.current = currentLanguage;
+  }, [currentLanguage]);
+  // 言語検出モード（FR-4.3）。次の `start.detectLanguage` に反映する。
+  // 検出確定（`participant_updated`、自分宛て）を受けたら自動でOFFに戻す。
+  const [detectLanguage, setDetectLanguage] = useState(false);
   // オーナーの終了ボタンの2段階確認（誤タップ防止）。
   const [endConfirming, setEndConfirming] = useState(false);
 
@@ -92,6 +112,18 @@ export function RoomClient({
     // する（既存動作を壊さない最小変更）。
     tokenRef.current = guestToken ?? createTemporaryToken();
   }
+
+  /**
+   * `participant_updated` が自分宛てかどうかをメッセージハンドラ内（WS effect
+   * のクロージャ）で判定するための ref。WS の message ハンドラは接続確立時に
+   * 一度だけ登録され、以降 `state` の変化では再登録されないため、
+   * `state.selfParticipantId` を直接参照すると stale な値を掴む
+   * （ttsEnabledRef と同じ理由でrefを介する）。
+   */
+  const selfParticipantIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    selfParticipantIdRef.current = state.selfParticipantId;
+  }, [state.selfParticipantId]);
 
   // 音声再生キュー（TTS）。
   // レンダー時（関数コンポーネント本体）でインスタンスを生成すると、
@@ -149,6 +181,46 @@ export function RoomClient({
     },
     [sendMessage],
   );
+
+  /**
+   * 話す言語の変更ハンドラ（SettingsPanel経由）。ローカル状態（次回 `start` に
+   * 反映）に加え、サーバーへ `update_settings` で通知する（他参加者への翻訳先
+   * ルーティングは即時反映、STTの言語自体は次の `start` から反映、
+   * `docs/design/websocket-protocol.md` `update_settings` 節）。
+   */
+  const handleLanguageChange = useCallback(
+    (nextLanguage: SupportedLanguage) => {
+      setCurrentLanguage(nextLanguage);
+      sendMessage({ type: "update_settings", enableTts: ttsEnabledRef.current, language: nextLanguage });
+    },
+    [sendMessage],
+  );
+
+  /**
+   * 表示名の変更確定ハンドラ（SettingsPanel の blur/Enter 確定）。
+   * サーバーへ `update_settings` で通知し、他参加者へ `participant_updated`
+   * として配信される（本人含む全参加者、bd-ecb で確定した配信範囲）。
+   */
+  const handleDisplayNameChange = useCallback(
+    (nextDisplayName: string) => {
+      setCurrentDisplayName(nextDisplayName);
+      sendMessage({
+        type: "update_settings",
+        enableTts: ttsEnabledRef.current,
+        displayName: nextDisplayName,
+      });
+    },
+    [sendMessage],
+  );
+
+  /**
+   * 言語検出モードトグルのハンドラ。サーバーへの通知は行わず、次の
+   * `start.detectLanguage` に反映するのみ（`docs/design/frontend-design.md`
+   * LanguageSelector節）。
+   */
+  const handleDetectLanguageChange = useCallback((next: boolean) => {
+    setDetectLanguage(next);
+  }, []);
 
   /**
    * オーナーの終了ボタン操作ハンドラ（2段階確認、誤タップ防止）。
@@ -215,8 +287,11 @@ export function RoomClient({
           roomId,
           role,
           token: tokenRef.current as string,
-          displayName,
-          language,
+          // 再接続時もSettingsPanelで変更した最新の表示名・言語を送る
+          // （サーバーは join の値で表示名・言語を上書きする契約のため、
+          // props の初期値のまま送ると設定が巻き戻ってしまう）。
+          displayName: currentDisplayNameRef.current,
+          language: currentLanguageRef.current,
           enableTts: ttsEnabledRef.current,
         };
         socket.send(JSON.stringify(joinMessage));
@@ -249,6 +324,11 @@ export function RoomClient({
               roomEndedRef.current = true;
               audioQueueRef.current?.setEnabled(false);
             }
+            // 直後に連続して届きうる participant_updated の自分判定（本判定は
+            // このeffectと同じ message ハンドラ内で同期的に行われる）に確実に
+            // 間に合わせるため、useEffect経由の同期を待たずここで同期的に
+            // 設定する（useEffect側の同期は他経路からの更新のためそのまま残す）。
+            selfParticipantIdRef.current = message.participantId;
             dispatch({
               type: "JOINED",
               participantId: message.participantId,
@@ -272,6 +352,23 @@ export function RoomClient({
             break;
           case "participant_left":
             dispatch({ type: "PARTICIPANT_LEFT", participantId: message.participantId });
+            break;
+          case "participant_updated":
+            // 本人を含む全参加者へ配信される（bd-ecb で確定した配信範囲）。
+            // 参加者一覧の言語表示を更新する。
+            dispatch({
+              type: "PARTICIPANT_UPDATED",
+              participantId: message.participantId,
+              language: message.language,
+              displayName: message.displayName,
+            });
+            // 自分宛て（言語検出モードで自分の言語が確定した場合等）なら、
+            // 言語セレクタの表示を検出結果に同期し、検出トグルを自動OFFに戻す
+            // （常時再判定しない、`docs/design/frontend-design.md` LanguageSelector節）。
+            if (message.participantId === selfParticipantIdRef.current) {
+              setCurrentLanguage(message.language);
+              setDetectLanguage(false);
+            }
             break;
           case "message":
             dispatch({ type: "MESSAGE", message: toMessageView(message) });
@@ -386,12 +483,18 @@ export function RoomClient({
       </section>
 
       <section className={styles.controls} aria-label="設定">
-        <LanguageSelector
-          value={currentLanguage}
-          onChange={setCurrentLanguage}
-          disabled={isRecording || state.roomEnded}
+        <SettingsPanel
+          displayName={currentDisplayName}
+          onDisplayNameChange={handleDisplayNameChange}
+          language={currentLanguage}
+          onLanguageChange={handleLanguageChange}
+          languageDisabled={isRecording}
+          detectLanguage={detectLanguage}
+          onDetectLanguageChange={handleDetectLanguageChange}
+          ttsEnabled={ttsEnabled}
+          onTtsChange={handleTtsToggle}
+          disabled={state.roomEnded}
         />
-        <TTSToggle enabled={ttsEnabled} onChange={handleTtsToggle} disabled={state.roomEnded} />
       </section>
 
       <Recorder
@@ -400,6 +503,7 @@ export function RoomClient({
         disabled={!isJoinedOrRecording || state.roomEnded}
         forceStop={state.roomEnded}
         enableTts={ttsEnabled}
+        detectLanguage={detectLanguage}
         onStatusChange={handleRecorderStatusChange}
       />
 
