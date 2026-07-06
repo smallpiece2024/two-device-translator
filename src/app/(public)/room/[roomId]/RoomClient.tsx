@@ -32,6 +32,12 @@ export interface RoomClientProps {
   displayName?: string;
   language?: SupportedLanguage;
   /**
+   * ルーム所有者の Supabase アクセストークン（Server Component が所有者と
+   * 判定した場合のみ渡される、bd-fmk）。指定があれば `join` メッセージの
+   * `token` に最優先で使用する（WSサーバーの厳格検証の owner 分岐が検証する）。
+   */
+  ownerToken?: string;
+  /**
    * ゲスト参加フロー（`POST /api/guest/join`）で発行された `gtt_guest`
    * クッキーの値（JWT文字列）。指定があれば `join` メッセージの `token` に
    * 使用し、無ければ Phase1 互換の仮トークンを発行する（既存動作を壊さない
@@ -58,6 +64,7 @@ export function RoomClient({
   role = "guest",
   displayName,
   language = "ja-JP",
+  ownerToken,
   guestToken,
 }: RoomClientProps) {
   const [state, dispatch] = useReducer(roomReducer, initialRoomState);
@@ -107,10 +114,10 @@ export function RoomClient({
   const roomEndedRef = useRef(false);
   const tokenRef = useRef<string | undefined>(undefined);
   if (tokenRef.current === undefined) {
-    // `guestToken`（`gtt_guest` クッキー由来）があればそれを正式なゲスト識別
-    // トークンとして使用する。無ければ Phase1 互換の仮トークンにフォールバック
-    // する（既存動作を壊さない最小変更）。
-    tokenRef.current = guestToken ?? createTemporaryToken();
+    // 優先順位: ownerToken（Supabaseアクセストークン、bd-fmk）>
+    // guestToken（`gtt_guest` クッキー由来）> Phase1 互換の仮トークン
+    // （dev/E2E の AUTH_MODE=insecure 用フォールバック）。
+    tokenRef.current = ownerToken ?? guestToken ?? createTemporaryToken();
   }
 
   /**
