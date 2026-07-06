@@ -232,11 +232,13 @@ npm run build:server
 standalone 出力には静的アセットが含まれないため、追加でコピーする:
 
 ```
-cp -r public .next/standalone/
+cp -r .next/static .next/standalone/.next/
 ```
 
+`public/` ディレクトリが存在する場合（現状のリポジトリには無い。favicon 等を追加した場合）のみ、あわせてコピーする:
+
 ```
-cp -r .next/static .next/standalone/.next/
+cp -r public .next/standalone/
 ```
 
 ### 5.8 pm2 起動と自動起動設定
