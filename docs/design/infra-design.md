@@ -22,7 +22,7 @@
                                        │    /*    → 127.0.0.1:3000   (Next.js)
                                        │
                                        ├─ pm2 ─ web: node .next/standalone/server.js  (127.0.0.1:3000)
-                                       └─ pm2 ─ ws : node dist-server/index.js         (127.0.0.1:3001)
+                                       └─ pm2 ─ ws : node dist-server/server/index.js  (127.0.0.1:3001)
                                             │ アタッチされた GCP サービスアカウント(ADC)
                                             └─▶ Google Cloud / Supabase / LLM
 ```
@@ -72,10 +72,11 @@ GCP リソースは **Terraform**（公式 `google` プロバイダ、`~> 7.39`�
 | プロセス | ビルド | 実行 | ポート |
 |---|---|---|---|
 | Next.js（web） | `next build`（`output: 'standalone'`） | `node .next/standalone/server.js` | 3000 |
-| WSサーバー（ws） | `tsc -p tsconfig.server.json` → `dist-server/` | `node dist-server/index.js` | 3001 |
+| WSサーバー（ws） | `tsc -p tsconfig.server.json && tsc-alias -p tsconfig.server.json` → `dist-server/` | `node dist-server/server/index.js` | 3001 |
 
 - `next.config.ts` に `output: 'standalone'` を設定し、`.next/standalone` に自己完結した成果物を出す（依存を同梱、配布が軽い）。
 - WSサーバーは本番では `tsx` 実行ではなく **tsc でビルドした JS を node で実行**（起動安定性・依存最小化）。開発時は `tsx --watch`（プロトタイプ踏襲）。
+- `tsconfig.server.json` の `include` が `server/**` と `shared/**` のため、ビルド出力は `dist-server/server/index.js`（`dist-server/index.js` ではない）。また tsc は `paths`（`@shared/*`）のエイリアスをコンパイル後の JS に書き換えないため、そのままでは `node` 実行時に `Cannot find module '@shared/...'` になる。**`tsc-alias`** を tsc の後段で実行し、コンパイル後の JS 内の `@shared/*` importを相対パスに書き換える。
 - `@google-cloud/*` は WSサーバー側のみの依存。Next.js standalone に含めない（tsconfig 分離、[app-architecture.md](./app-architecture.md#tsconfig-分離方針) 参照）。`next.config.ts` の `serverExternalPackages` に `@google-cloud/*` を保険で記載してよい（設計上 Next.js からは import しない）。
 
 ---
@@ -89,7 +90,7 @@ GCP リソースは **Terraform**（公式 `google` プロバイダ、`~> 7.39`�
 module.exports = {
   apps: [
     { name: "web", script: ".next/standalone/server.js", node_args: "--env-file=.env", env: { PORT: 3000, HOSTNAME: "127.0.0.1" } },
-    { name: "ws",  script: "dist-server/index.js",        node_args: "--env-file=.env", env: { WS_PORT: 3001 } },
+    { name: "ws",  script: "dist-server/server/index.js", node_args: "--env-file=.env", env: { WS_PORT: 3001 } },
   ],
 };
 ```
@@ -200,7 +201,7 @@ module.exports = {
 | `typecheck` | `tsc --noEmit`（`tsconfig.json`: src + shared） |
 | `typecheck:server` | `tsc --noEmit -p tsconfig.server.json`（server + shared） |
 | `test` | `jest --passWithNoTests` |
-| `build` | `next build`（standalone）。WS ビルドは別途 `build:server`（`tsc -p tsconfig.server.json`） |
+| `build` | `next build`（standalone）。WS ビルドは別途 `build:server`（`tsc -p tsconfig.server.json && tsc-alias -p tsconfig.server.json`） |
 | `dev` | `concurrently` で `next dev` と `dev:ws`（プロトタイプ踏襲） |
 | `dev:ws` | `tsx --watch --env-file-if-exists=.env server/index.ts`（`.env` からWSサーバーの環境変数を読込、bd-7sg） |
 | `sb` | `dotenv -o -e .env -- npx supabase`。`npm run sb -- <subcommand>` で Supabase CLI を `.env` の `SUPABASE_ACCESS_TOKEN` で実行（bd-7sg） |

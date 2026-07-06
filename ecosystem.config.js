@@ -18,7 +18,7 @@ module.exports = {
     },
     {
       name: "ws",
-      script: "dist-server/index.js",
+      script: "dist-server/server/index.js",
       node_args: "--env-file=.env",
       env: {
         WS_PORT: 3001,

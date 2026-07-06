@@ -178,6 +178,12 @@ sudo apt-get install -y caddy
 
 ### 5.5 リポジトリの配置
 
+Debian 12 の最小イメージには `git` が含まれていないため、先にインストールする（実機確認済み）:
+
+```
+sudo apt-get install -y git
+```
+
 ```
 sudo mkdir -p /opt/two-device-translator
 ```

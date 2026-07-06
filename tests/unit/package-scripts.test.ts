@@ -41,6 +41,10 @@ describe("package.json の npm scripts定義", () => {
     expect(pkg.scripts?.["build:server"]).toContain("tsconfig.server.json");
   });
 
+  it("build:server は tsc-alias でパスエイリアス（@shared/*）を相対パスに書き換える", () => {
+    expect(pkg.scripts?.["build:server"]).toContain("tsc-alias");
+  });
+
   describe("環境変数のプロジェクト直下 .env 集約（マシン全体のsetx依存を排除、bd-7sg）", () => {
     it("dev:ws は --env-file 系オプションで .env を読み込み server/index.ts を起動する", () => {
       const devWs = pkg.scripts?.["dev:ws"] ?? "";

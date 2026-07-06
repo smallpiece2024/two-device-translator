@@ -47,7 +47,7 @@ describe("ecosystem.config.js（pm2）", () => {
     expect(config.apps).toHaveLength(2);
   });
 
-  it("ws アプリが dist-server/index.js をポート3001で起動する設定である", () => {
+  it("ws アプリが dist-server/server/index.js をポート3001で起動する設定である", () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const config = require(ecosystemPath) as {
       apps: Array<{
@@ -59,7 +59,7 @@ describe("ecosystem.config.js（pm2）", () => {
     };
     const ws = config.apps.find((app) => app.name === "ws");
     expect(ws).toBeDefined();
-    expect(ws?.script).toContain("dist-server/index.js");
+    expect(ws?.script).toContain("dist-server/server/index.js");
     expect(ws?.env?.WS_PORT).toBe(3001);
   });
 
