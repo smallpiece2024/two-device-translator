@@ -7,7 +7,7 @@
     "dev:web": "next dev",
     "dev:ws": "tsx --watch --env-file-if-exists=.env server/index.ts",
     "build": "next build",
-    "build:server": "tsc -p tsconfig.server.json",
+    "build:server": "tsc -p tsconfig.server.json && tsc-alias -p tsconfig.server.json",
     "start": "next start",
     "lint": "eslint src server shared",
     "typecheck": "tsc --noEmit",
@@ -50,6 +50,7 @@
     "jest": "^29.7.0",
     "jest-environment-jsdom": "^30.4.1",
     "ts-jest": "^29.3.4",
+    "tsc-alias": "^1.9.0",
     "tsx": "^4.19.4",
     "typescript": "^5.8.3"
   }
