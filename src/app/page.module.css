@@ -1,0 +1,53 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.25rem;
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 4rem 1.5rem 2rem;
+  text-align: center;
+}
+
+.title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #1c1c20;
+}
+
+.description {
+  font-size: 1rem;
+  line-height: 1.7;
+  color: #6b6b75;
+}
+
+.loginLink {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  min-width: 220px;
+  padding: 0.5rem 1.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #fff;
+  background-color: #2563eb;
+  border: 1px solid #2563eb;
+  border-radius: 0.25rem;
+  text-decoration: none;
+}
+
+.loginLink:hover {
+  background-color: #1d4ed8;
+  border-color: #1d4ed8;
+}
+
+.loginLink:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.guestNote {
+  font-size: 0.85rem;
+  color: #6b6b75;
+}
