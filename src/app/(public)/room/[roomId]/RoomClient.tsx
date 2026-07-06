@@ -507,6 +507,22 @@ export function RoomClient({
         <p>参加者: {state.participants.filter((p) => p.present).length}人</p>
       </section>
 
+      {role === "owner" && !state.roomEnded && (
+        <section className={styles.inviteSection} aria-label="招待">
+          {/* 新規タブで開くことでWS接続（入室状態）を維持したままQRを提示できる
+              （bd-hue。ルーム内モーダル化は将来の改善候補）。 */}
+          <a
+            href={`/rooms/${roomId}/invite`}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="招待QRを表示（新しいタブで開く）"
+            className={styles.inviteQrLink}
+          >
+            招待QRを表示
+          </a>
+        </section>
+      )}
+
       <section className={styles.controls} aria-label="設定">
         <SettingsPanel
           displayName={currentDisplayName}

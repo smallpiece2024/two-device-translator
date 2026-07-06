@@ -102,6 +102,7 @@ app/(owner)/rooms/[roomId]/page.tsx     (Server Component: 認証・所有者確
 
 - `POST /api/invites` で発行した招待URL（`https://{host}/join/{token}`）を QR 生成して表示（FR-2.2）。QR ライブラリ（例: `qrcode`）でクライアント生成、または Server Component で data URL 生成。
 - 期限・再発行に対応（[db-design.md](./db-design.md#invites招待qr) 参照）。
+- **導線（bd-hue で確定、ユーザー要望）**: ルーム作成後はルーム画面へ直行し、QR はルーム画面内の「招待QRを表示」リンク（owner のみ、新規タブで招待ページを開き WS 接続を維持）からいつでも提示できる。ルーム一覧の進行中ルームにも「招待」リンクがある（bd-83x）。ルーム内モーダル化は将来の改善候補。
 
 ### AIAssistantPanel
 

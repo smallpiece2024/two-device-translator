@@ -624,6 +624,56 @@ describe("RoomClient", () => {
       expect(screen.queryByRole("button", { name: "ルームを終了する" })).not.toBeInTheDocument();
     });
 
+    it("role=ownerでは招待QRリンクが表示され、招待ページを新規タブで開く（bd-hue）", () => {
+      render(<RoomClient roomId="room-abc" wsUrl="ws://localhost:3001/ws" role="owner" />);
+      const socket = latestSocket();
+
+      act(() => {
+        joinRoom(socket);
+      });
+
+      const inviteLink = screen.getByRole("link", {
+        name: "招待QRを表示（新しいタブで開く）",
+      });
+      expect(inviteLink).toHaveAttribute("href", "/rooms/room-abc/invite");
+      expect(inviteLink).toHaveAttribute("target", "_blank");
+      // タブナビング防止（セキュリティ属性の回帰ガード、レビュー指摘）
+      expect(inviteLink).toHaveAttribute("rel", "noopener noreferrer");
+    });
+
+    it("role=guestでは招待QRリンクが表示されない（bd-hue）", () => {
+      render(<RoomClient roomId="room-abc" wsUrl="ws://localhost:3001/ws" role="guest" />);
+      const socket = latestSocket();
+
+      act(() => {
+        joinRoom(socket);
+      });
+
+      expect(
+        screen.queryByRole("link", { name: "招待QRを表示（新しいタブで開く）" })
+      ).not.toBeInTheDocument();
+    });
+
+    it("room_ended後は招待QRリンクが表示されない（bd-hue）", () => {
+      render(<RoomClient roomId="room-abc" wsUrl="ws://localhost:3001/ws" role="owner" />);
+      const socket = latestSocket();
+
+      act(() => {
+        joinRoom(socket);
+      });
+      expect(
+        screen.getByRole("link", { name: "招待QRを表示（新しいタブで開く）" })
+      ).toBeInTheDocument();
+
+      act(() => {
+        socket.dispatchMessage({ type: "room_ended", reason: "owner_ended" });
+      });
+
+      expect(
+        screen.queryByRole("link", { name: "招待QRを表示（新しいタブで開く）" })
+      ).not.toBeInTheDocument();
+    });
+
     it("録音中に room_ended を受信すると、forceStop の配線経由で Recorder から stop メッセージが送信される", async () => {
       const user = userEvent.setup({
         advanceTimers: (ms) => {
