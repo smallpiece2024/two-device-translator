@@ -66,9 +66,16 @@ export function RoomList({ rooms }: RoomListProps) {
             </span>
             <span className={styles.createdAt}>{formatCreatedAt(room.createdAt)} 作成</span>
           </div>
-          <Link href={`/room/${room.id}`} className={styles.enterLink}>
-            入室する
-          </Link>
+          <div className={styles.itemActions}>
+            {room.status === "active" && (
+              <Link href={`/rooms/${room.id}/invite`} className={styles.inviteLink}>
+                招待
+              </Link>
+            )}
+            <Link href={`/room/${room.id}`} className={styles.enterLink}>
+              入室する
+            </Link>
+          </div>
         </li>
       ))}
     </ul>
