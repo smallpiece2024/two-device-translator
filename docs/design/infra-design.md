@@ -43,15 +43,27 @@
 - 月額概算（東京、2026-07 時点）: e2-small 約 $15.7 + 使用中外部 IPv4 約 $2.9 + pd-balanced 20GB 約 $2 ≒ **合計約 $21/月**。e2 ファミリーは継続利用割引（SUD）の対象外（確約利用割引 CUD のみ。検証段階では契約しない）。
 - **`next build` を VM 上で実行する場合の注意**: ビルドはピークで 1GB 超のメモリを使うため、e2-small では swap（2GB 以上）を設定するか、CI / ローカルでビルドした成果物（`.next/standalone` / `dist-server/`）を転送する方式を優先する（構築タスク bd-bg3 で確定）。
 
-### IaC（Terraform）によるプロビジョニング（2026-07-06 決定）
+### IaC（Terraform）によるプロビジョニング（2026-07-06 決定、bd-bg3 で実装確定）
 
-GCP リソースは **Terraform**（公式 `google` プロバイダ）で定義・構築する（手作業の gcloud / コンソール操作を構成の正とはしない）。
+GCP リソースは **Terraform**（公式 `google` プロバイダ、`~> 7.39`）で定義・構築する（手作業の gcloud / コンソール操作を構成の正とはしない）。
 
-- 配置: リポジトリの `infra/terraform/` 配下（bd-bg3 で作成）。
-- 管理対象: GCE VM（マシンタイプ・ブートディスク）、静的外部 IPv4、ファイアウォールルール（80/443 のみ開放、SSH は IAP または送信元制限）、サービスアカウントと IAM ロール（STT / Translation / TTS の利用ロール、最小権限）、必要 API の有効化。
-- state 管理: 当面はローカル state で開始し、運用が固まったら GCS バックエンドへ移行を検討（単一運用者のため当面は衝突リスクなし）。state ファイルはコミットしない（`.gitignore` に `*.tfstate*` を追加）。
+- 配置: リポジトリの `infra/terraform/` 配下。ファイル構成（Terraform 慣例に従い機能単位で分割）:
+  | ファイル | 内容 |
+  |---|---|
+  | `versions.tf` | `required_version`（`~> 1.15`）、`google` プロバイダのバージョン固定・初期化 |
+  | `variables.tf` | `project_id`（既定 `two-device-translator`）、`region`（`asia-northeast1`）、`zone`（`asia-northeast1-b`）、`domain`（`sallytalk.jp`）、`machine_type`（`e2-small`）等 |
+  | `apis.tf` | `google_project_service` で compute / speech / translate / texttospeech / iap / **dns** を有効化（`disable_on_destroy = false`） |
+  | `iam.tf` | サービスアカウント（`translator-vm`）＋ IAM ロール **`roles/speech.client` と `roles/cloudtranslate.user` の2つのみ**（TTS はロール自体が存在せず API有効化のみで利用可、gcloudで実機確認済み。検証記録: 2026-07-06 `gcloud iam roles list --filter="name~texttospeech"` および `gcloud iam list-testable-permissions`（対象プロジェクト、filter=texttospeech）がともに0件であることを確認） |
+  | `network.tf` | 静的外部IPv4（リージョナル）、ファイアウォール2本（`allow-https`: tcp:80,443 from 0.0.0.0/0 / `allow-ssh-iap`: tcp:22 from `35.235.240.0/20` のみ） |
+  | `dns.tf` | **Cloud DNS** マネージドゾーン（`dns_name = "${var.domain}."`）と apex の A レコード（TTL 300、rrdatas は `google_compute_address` の address を直接参照し手動転記を排除） |
+  | `compute.tf` | GCE VM（e2-small、debian-12 + pd-balanced 20GB、静的IPアタッチ、SA アタッチ `scopes=["cloud-platform"]`、Shielded VM（secure boot / vTPM / integrity monitoring 全て有効）、metadata `enable-oslogin=TRUE`） |
+  | `outputs.tf` | 静的IP、インスタンス名、SAメール、**Cloud DNS ゾーンのネームサーバー一覧**（レジストラでのNS委任設定に使用） |
+- 管理対象: GCE VM、静的外部 IPv4、ファイアウォールルール、サービスアカウントと IAM ロール、必要 API の有効化、**Cloud DNS（ゾーン＋Aレコード）**。
+- **DNS 運用**: `sallytalk.jp` のゾーン・Aレコードは Cloud DNS（Terraform管理）が正。ドメインのレジストラ（購入元）側では、Terraform 出力のネームサーバー4つへの **NS委任のみ**を手動設定する（一度きり）。IPアドレス変更時も Aレコードは Terraform 側で自動更新され、レジストラ側の再設定は不要。
+- SSH は **IAP TCP フォワーディングのみ**（ファイアウォールで22番を `35.235.240.0/20` に限定）。OS Login 有効化により公開鍵の事前配布は不要。`gcloud compute ssh --tunnel-through-iap` で接続する（[docs/deploy/gce-setup.md](../deploy/gce-setup.md) 参照）。
+- state 管理: 当面はローカル state で開始し、運用が固まったら GCS バックエンドへ移行を検討（単一運用者のため当面は衝突リスクなし）。state ファイルはコミットしない（`.gitignore` に `infra/terraform/*.tfstate*` 等を追加）。`.terraform.lock.hcl` はプロバイダバージョン固定のため**コミットする**。
 - **Supabase は Terraform の管理対象外**: スキーマ・RLS・トリガーは既に `supabase/migrations/`（Supabase CLI）でコード管理されており、これが Supabase 公式の標準 IaC。Terraform プロバイダはプロジェクト設定の一部しかカバーせず、二重管理の利益がないため採用しない。プロジェクト作成は一度きりのコンソール操作とする。
-- VM 内部のセットアップ（Node.js / pm2 / Caddy の導入・設定）は Terraform の守備範囲外とし、起動スクリプト（`metadata_startup_script`）またはセットアップ手順書（bd-bg3 で作成）で扱う。
+- VM 内部のセットアップ（Node.js / pm2 / Caddy の導入・設定）は Terraform の守備範囲外とし、セットアップ手順書（[docs/deploy/gce-setup.md](../deploy/gce-setup.md)、bd-bg3 で作成）で扱う。
 
 ---
 
@@ -70,22 +82,23 @@ GCP リソースは **Terraform**（公式 `google` プロバイダ）で定義�
 
 ## プロセス管理（pm2）
 
-`ecosystem.config.js` で web / ws の2アプリを管理する。
+リポジトリルートの `ecosystem.config.js`（bd-bg3 で作成）で web / ws の2アプリを管理する。
 
 ```js
-// ecosystem.config.js （設計指針）
+// ecosystem.config.js （実装）
 module.exports = {
   apps: [
-    { name: "web", script: ".next/standalone/server.js", env: { PORT: 3000, HOSTNAME: "127.0.0.1" } },
-    { name: "ws",  script: "dist-server/index.js",        env: { WS_PORT: 3001 } },
+    { name: "web", script: ".next/standalone/server.js", node_args: "--env-file=.env", env: { PORT: 3000, HOSTNAME: "127.0.0.1" } },
+    { name: "ws",  script: "dist-server/index.js",        node_args: "--env-file=.env", env: { WS_PORT: 3001 } },
   ],
 };
 ```
 
 - `pm2 startup` + `pm2 save` で VM 再起動後の自動起動を設定。
-- 環境変数は pm2 の env またはプロセス起動元の `.env`（VM 上、コミットしない）で供給。
+- **`.env` の読込方式**: pm2 の ecosystem.config.js には `.env` を自動読込する公式オプションが存在しない（`env` / `env_production` は静的な値の直書きのみ対応）ため、Node.js 20.6+ で安定利用可能な `--env-file` フラグを `node_args` に指定する方式を採用した（VM は Node.js 24 系）。`.env` は VM 上に配置し、コミットしない。
 - ログは pm2 のログ（`pm2 logs`）。本番用ログ基盤は当面導入しない（YAGNI）。
 - systemd での管理も可（要件は pm2/systemd 等）。本設計は pm2 を基本とする。
+- VM セットアップの具体的なコマンド列は [docs/deploy/gce-setup.md](../deploy/gce-setup.md) を参照。
 
 ---
 
