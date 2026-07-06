@@ -25,6 +25,14 @@ describe(".env.example: 実キー混入防止ガード", () => {
     expect(content).not.toMatch(/eyJ[A-Za-z0-9_-]{10,}/);
   });
 
+  it("Supabase personal access token 形式 (sbp_...) の値が含まれない", () => {
+    expect(content).not.toMatch(/sbp_[A-Za-z0-9_-]+/);
+  });
+
+  it("SUPABASE_ACCESS_TOKEN は空のプレースホルダーのままである", () => {
+    expect(content).toMatch(/^SUPABASE_ACCESS_TOKEN=$/m);
+  });
+
   it("SUPABASE_SERVICE_KEY はプレースホルダーのままである", () => {
     expect(content).toMatch(/SUPABASE_SERVICE_KEY=your-service-role-key/);
   });
