@@ -6,12 +6,31 @@
  * service_role 相当。docs/design/overview.md D-11）で行う。
  *
  * 手順:
- *   1. `inviteToken` を `invites` から照合（存在・`expires_at`・所属 `room.status=active`）
- *   2. `participants` に guest 行を insert
+ *   1. `inviteToken` を `invites` から**原子的に消費**する
+ *      （`update ... where token=? and used_at is null and expires_at > now()`
+ *      を1文で実行し、`used_at` を書き込む。bd-1oy: 単回消費化。
+ *      同時に2リクエストが来ても消費に成功するのは片方だけになる。TOCTOU完全解消）
+ *   2. 消費できた invite の room が `status=active` か確認
+ *      （非active・不整合の場合は消費を取り消す補償を行う。後述コメント参照）
+ *   3. `participants` に guest 行を insert
  *      （`role='guest'`、`guest_cookie_id` は新規UUID、CHECK制約に適合）
- *   3. `signGuestToken({ roomId, participantId })` でゲスト識別JWTを発行
- *   4. `gtt_guest` クッキーを httpOnly・sameSite=lax・path=/・maxAge=JWTと同一TTL でセット
- *   5. `{ roomId }` を返す（画面遷移はクライアント側で行う）
+ *      失敗した場合は招待の消費を取り消す補償を行う（best-effort）。
+ *   4. `signGuestToken({ roomId, participantId })` でゲスト識別JWTを発行
+ *   5. `gtt_guest` クッキーを httpOnly・sameSite=lax・path=/・maxAge=JWTと同一TTL でセット
+ *   6. `{ roomId }` を返す（画面遷移はクライアント側で行う）
+ *
+ * 消費順序の設計判断（bd-1oy、テスト担当への引き継ぎ事項）:
+ *   - room の status（active か）は `invites` 単体の WHERE 句だけでは判定できない
+ *     （`rooms` との結合が必要）ため、まず token/used_at/expires_at のみで
+ *     原子的に消費し、その後で room.status を確認する2段構成にした。
+ *   - 消費後に room が非active と判明した場合、または participants insert が
+ *     失敗した場合は、`used_at` を null に戻す補償更新を行う（best-effort。
+ *     補償自体が失敗してもユーザーには一律のエラー文言のみを返す）。
+ *   - この設計では「消費 → room非active判明 → 補償」の間、ごく短時間だけ
+ *     トークンが使用済み状態になるが、他リクエストが同時にこの隙間を突いて
+ *     消費に成功することはない（このリクエストが既に消費済みにしているため）。
+ *     よって「同一トークンで複数の participants 行が作られる」ことは発生しない
+ *     （このタスクの目的である単回消費化は補償の有無に関わらず担保される）。
  *
  * エラーは一律の日本語文言のみを返し、トークンの有効性以外の内部情報
  * （DBエラー詳細等）は漏らさない（このタスクの指示事項）。
@@ -41,6 +60,30 @@ function errorResponse(status: number, message = GENERIC_ERROR_MESSAGE) {
   return NextResponse.json({ error: message }, { status });
 }
 
+/**
+ * 消費済みにした invite の `used_at` を null に戻す（best-effort 補償）。
+ *
+ * 呼び出し元では既に別のエラーレスポンスを返すことが確定しているため、
+ * ここでの失敗はログ出力のみに留め、レスポンス内容には影響させない
+ * （一律のエラー文言のみを返す方針を維持するため）。
+ */
+async function compensateInviteConsumption(
+  supabase: ReturnType<typeof getSupabaseAdminClient>,
+  inviteId: string
+): Promise<void> {
+  const { error } = await supabase
+    .from("invites")
+    .update({ used_at: null })
+    .eq("id", inviteId);
+
+  if (error) {
+    console.error(
+      "[api/guest/join] failed to compensate invite consumption",
+      error.message
+    );
+  }
+}
+
 export async function POST(request: NextRequest) {
   let body: unknown;
   try {
@@ -56,34 +99,41 @@ export async function POST(request: NextRequest) {
 
   const { inviteToken, displayName, language } = parsed.data;
   const supabase = getSupabaseAdminClient();
+  const nowIso = new Date().toISOString();
 
-  const { data: invite, error: inviteError } = await supabase
+  // 原子的消費: token/used_at/expires_at の条件を満たす行のみ used_at を
+  // 書き込む。この1文がヒットするのは常に高々1リクエストのみ
+  // （同時リクエストがあっても後発は0行ヒットになる）。
+  const { data: consumedInvite, error: consumeError } = await supabase
     .from("invites")
-    .select("room_id, expires_at, room:rooms(status)")
+    .update({ used_at: nowIso })
     .eq("token", inviteToken)
+    .is("used_at", null)
+    .gt("expires_at", nowIso)
+    .select("id, room_id, room:rooms(status)")
     .maybeSingle();
 
-  if (inviteError) {
-    console.error("[api/guest/join] failed to look up invite", inviteError.message);
+  if (consumeError) {
+    console.error("[api/guest/join] failed to consume invite", consumeError.message);
     return errorResponse(500, "参加処理に失敗しました。時間をおいて再度お試しください。");
   }
 
-  if (!invite) {
-    return errorResponse(404);
-  }
-
-  const expiresAt = new Date(invite.expires_at as string);
-  if (Number.isNaN(expiresAt.getTime()) || expiresAt.getTime() <= Date.now()) {
+  if (!consumedInvite) {
+    // 存在しない・使用済み・期限切れのいずれも一律の文言で返す
+    // （内部状態を推測されないため）。
     return errorResponse(410);
   }
 
-  const room = invite.room as { status?: string } | { status?: string }[] | null;
+  const inviteId = consumedInvite.id as string;
+  const room = consumedInvite.room as { status?: string } | { status?: string }[] | null;
   const roomStatus = Array.isArray(room) ? room[0]?.status : room?.status;
+
   if (roomStatus !== "active") {
+    await compensateInviteConsumption(supabase, inviteId);
     return errorResponse(410);
   }
 
-  const roomId = invite.room_id as string;
+  const roomId = consumedInvite.room_id as string;
   const guestCookieId = crypto.randomUUID();
 
   const { data: participant, error: participantError } = await supabase
@@ -103,6 +153,7 @@ export async function POST(request: NextRequest) {
       "[api/guest/join] failed to create participant",
       participantError?.message
     );
+    await compensateInviteConsumption(supabase, inviteId);
     return errorResponse(500, "参加処理に失敗しました。時間をおいて再度お試しください。");
   }
 

@@ -1,17 +1,21 @@
 /**
- * `POST /api/guest/join` Route Handler の単体テスト（bd-jny）。
+ * `POST /api/guest/join` Route Handler の単体テスト（bd-jny, bd-1oy）。
  *
  * `src/lib/supabase/admin.ts`（管理者権限クライアント）と
  * `shared/auth/guestToken.ts` の `signGuestToken` をモックし、
  * 実 Supabase / 実 JWT 署名には触れない。
  *
  * 検証観点:
- * - 正常系: invite有効（expires_at未来・room active）→ participants insert
- *   （role="guest"、サーバー生成 guest_cookie_id）→ gtt_guest クッキー
- *   （httpOnly・sameSite=lax・maxAge=7日）→ roomId 返却
- * - 異常系: 無効トークン・期限切れ・room非active → 4xx＋一律エラー文言
+ * - 正常系: invite有効（expires_at未来・room active・未使用）→ 原子的consume
+ *   （update({used_at}).eq("token").is("used_at",null).gt("expires_at",now)）
+ *   → participants insert（role="guest"、サーバー生成 guest_cookie_id）
+ *   → gtt_guest クッキー（httpOnly・sameSite=lax・maxAge=7日）→ roomId 返却
+ * - 異常系: 無効トークン・期限切れ・使用済み（いずれもconsumeが0行ヒット）・
+ *   room非active（consume成功後に判明、補償updateが呼ばれる） → 4xx＋一律エラー文言
  * - 入力不正（zod）: inviteToken欠落・language不正 → 4xx
- * - insert失敗 → 一律エラー、クッキー未設定
+ * - insert失敗（補償updateが呼ばれる） → 一律エラー、クッキー未設定
+ * - 単回消費化（bd-1oy）: consumeのWHERE句に token/used_at is null/expires_at > now
+ *   が正しく渡ること（この条件が外れると同一トークンの2回目joinが拒否されなくなる）
  */
 import { NextRequest } from "next/server";
 import { DEFAULT_GUEST_TOKEN_TTL_SEC, GUEST_COOKIE_NAME } from "../../shared/auth/guestToken";
@@ -40,38 +44,57 @@ const mockedSignGuestToken = signGuestToken as jest.Mock;
 // テストヘルパー
 // ---------------------------------------------------------------------------
 
-type InviteResult = {
+type ConsumeResult = {
   data:
     | {
+        id: string;
         room_id: string;
-        expires_at: string;
         room: { status: string } | { status: string }[];
       }
     | null;
   error: { message: string } | null;
 };
+type CompensateResult = { error: { message: string } | null };
 type ParticipantInsertResult = {
   data: { id: string } | null;
   error: { message: string } | null;
 };
 
 function makeMockSupabaseClient(options: {
-  inviteResult?: InviteResult;
+  consumeResult?: ConsumeResult;
+  compensateResult?: CompensateResult;
   participantInsertResult?: ParticipantInsertResult;
 }) {
-  const inviteResult: InviteResult = options.inviteResult ?? {
+  const consumeResult: ConsumeResult = options.consumeResult ?? {
     data: null,
     error: { message: "not configured" },
   };
+  const compensateResult: CompensateResult = options.compensateResult ?? { error: null };
   const participantInsertResult: ParticipantInsertResult = options.participantInsertResult ?? {
     data: { id: "participant-1" },
     error: null,
   };
 
-  // invites チェーン: from("invites").select().eq().maybeSingle()
-  const inviteMaybeSingle = jest.fn().mockResolvedValue(inviteResult);
-  const inviteEq = jest.fn().mockReturnValue({ maybeSingle: inviteMaybeSingle });
-  const inviteSelect = jest.fn().mockReturnValue({ eq: inviteEq });
+  // 消費チェーン: from("invites").update({used_at: iso}).eq("token", x)
+  //   .is("used_at", null).gt("expires_at", now).select(...).maybeSingle()
+  const consumeMaybeSingle = jest.fn().mockResolvedValue(consumeResult);
+  const consumeSelect = jest.fn().mockReturnValue({ maybeSingle: consumeMaybeSingle });
+  const consumeGt = jest.fn().mockReturnValue({ select: consumeSelect });
+  const consumeIs = jest.fn().mockReturnValue({ gt: consumeGt });
+  const consumeEq = jest.fn().mockReturnValue({ is: consumeIs });
+
+  // 補償チェーン: from("invites").update({used_at: null}).eq("id", inviteId)
+  // （終端。Supabaseのクエリビルダーはthenableなので直接resolveする）
+  const compensateEq = jest.fn().mockResolvedValue(compensateResult);
+
+  // update の呼び出しはペイロードで消費/補償を判別する
+  // （実装は消費時に used_at: <iso文字列>、補償時に used_at: null を渡す）。
+  const invitesUpdate = jest.fn((payload: { used_at: string | null }) => {
+    if (payload.used_at === null) {
+      return { eq: compensateEq };
+    }
+    return { eq: consumeEq };
+  });
 
   // participants チェーン: from("participants").insert().select().single()
   const participantSingle = jest.fn().mockResolvedValue(participantInsertResult);
@@ -80,7 +103,7 @@ function makeMockSupabaseClient(options: {
 
   const from = jest.fn((table: string) => {
     if (table === "invites") {
-      return { select: inviteSelect };
+      return { update: invitesUpdate };
     }
     if (table === "participants") {
       return { insert: participantInsert };
@@ -91,9 +114,13 @@ function makeMockSupabaseClient(options: {
   return {
     client: { from },
     from,
-    inviteSelect,
-    inviteEq,
-    inviteMaybeSingle,
+    invitesUpdate,
+    consumeEq,
+    consumeIs,
+    consumeGt,
+    consumeSelect,
+    consumeMaybeSingle,
+    compensateEq,
     participantInsert,
     participantSelect,
     participantSingle,
@@ -102,10 +129,6 @@ function makeMockSupabaseClient(options: {
 
 function futureIso(daysFromNow = 1): string {
   return new Date(Date.now() + daysFromNow * 24 * 60 * 60 * 1000).toISOString();
-}
-
-function pastIso(daysAgo = 1): string {
-  return new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000).toISOString();
 }
 
 function makeRequest(body: unknown): NextRequest {
@@ -162,12 +185,8 @@ describe("POST /api/guest/join", () => {
   describe("正常系", () => {
     test("有効な招待トークン → participants insert（role=guest, guest_cookie_idはサーバー生成）→ gtt_guestクッキー設定 → roomId返却", async () => {
       const mock = makeMockSupabaseClient({
-        inviteResult: {
-          data: {
-            room_id: "room-1",
-            expires_at: futureIso(),
-            room: { status: "active" },
-          },
+        consumeResult: {
+          data: { id: "invite-1", room_id: "room-1", room: { status: "active" } },
           error: null,
         },
         participantInsertResult: { data: { id: "participant-1" }, error: null },
@@ -205,12 +224,15 @@ describe("POST /api/guest/join", () => {
       expect(setCookie!.httpOnly).toBe(true);
       expect(setCookie!.sameSite).toBe("lax");
       expect(setCookie!.maxAge).toBe(DEFAULT_GUEST_TOKEN_TTL_SEC);
+
+      // 補償updateは呼ばれない（正常系のため）
+      expect(mock.compensateEq).not.toHaveBeenCalled();
     });
 
     test("displayName未指定 → nullとしてinsertされる", async () => {
       const mock = makeMockSupabaseClient({
-        inviteResult: {
-          data: { room_id: "room-1", expires_at: futureIso(), room: { status: "active" } },
+        consumeResult: {
+          data: { id: "invite-1", room_id: "room-1", room: { status: "active" } },
           error: null,
         },
         participantInsertResult: { data: { id: "participant-1" }, error: null },
@@ -229,12 +251,8 @@ describe("POST /api/guest/join", () => {
 
     test("room が配列形状（room: [{status:'active'}]）で返るケース → 正常にroomIdを返す（Array.isArray防御分岐のカバレッジ）", async () => {
       const mock = makeMockSupabaseClient({
-        inviteResult: {
-          data: {
-            room_id: "room-1",
-            expires_at: futureIso(),
-            room: [{ status: "active" }],
-          },
+        consumeResult: {
+          data: { id: "invite-1", room_id: "room-1", room: [{ status: "active" }] },
           error: null,
         },
         participantInsertResult: { data: { id: "participant-1" }, error: null },
@@ -253,8 +271,8 @@ describe("POST /api/guest/join", () => {
       setNodeEnv("production");
 
       const mock = makeMockSupabaseClient({
-        inviteResult: {
-          data: { room_id: "room-1", expires_at: futureIso(), room: { status: "active" } },
+        consumeResult: {
+          data: { id: "invite-1", room_id: "room-1", room: { status: "active" } },
           error: null,
         },
         participantInsertResult: { data: { id: "participant-1" }, error: null },
@@ -273,8 +291,8 @@ describe("POST /api/guest/join", () => {
       setNodeEnv("development");
 
       const mock = makeMockSupabaseClient({
-        inviteResult: {
-          data: { room_id: "room-1", expires_at: futureIso(), room: { status: "active" } },
+        consumeResult: {
+          data: { id: "invite-1", room_id: "room-1", room: { status: "active" } },
           error: null,
         },
         participantInsertResult: { data: { id: "participant-1" }, error: null },
@@ -288,64 +306,78 @@ describe("POST /api/guest/join", () => {
       expect(setCookie).toBeDefined();
       expect(setCookie!.secure).toBeFalsy();
     });
+
+    test("consumeのWHERE句が token一致・used_at is null・expires_at > now で構成される（単回消費化の検知ポイント）", async () => {
+      const mock = makeMockSupabaseClient({
+        consumeResult: {
+          data: { id: "invite-1", room_id: "room-1", room: { status: "active" } },
+          error: null,
+        },
+        participantInsertResult: { data: { id: "participant-1" }, error: null },
+      });
+      mockedGetSupabaseAdminClient.mockReturnValue(mock.client);
+
+      const beforeCall = Date.now();
+      const response = await POST(makeRequest(validBody({ inviteToken: "tok-abc" })));
+      const afterCall = Date.now();
+
+      expect(response.status).toBe(200);
+
+      // update({used_at: <iso>}) が消費用ペイロードで呼ばれる
+      const updatePayload = mock.invitesUpdate.mock.calls[0][0];
+      expect(typeof updatePayload.used_at).toBe("string");
+      const usedAtMs = new Date(updatePayload.used_at).getTime();
+      expect(usedAtMs).toBeGreaterThanOrEqual(beforeCall);
+      expect(usedAtMs).toBeLessThanOrEqual(afterCall);
+
+      // WHERE句: eq("token", inviteToken)
+      expect(mock.consumeEq).toHaveBeenCalledWith("token", "tok-abc");
+      // WHERE句: is("used_at", null)
+      expect(mock.consumeIs).toHaveBeenCalledWith("used_at", null);
+      // WHERE句: gt("expires_at", <now以下のiso>)
+      const gtArgs = mock.consumeGt.mock.calls[0];
+      expect(gtArgs[0]).toBe("expires_at");
+      expect(new Date(gtArgs[1] as string).getTime()).toBeGreaterThanOrEqual(beforeCall);
+      expect(new Date(gtArgs[1] as string).getTime()).toBeLessThanOrEqual(afterCall);
+    });
   });
 
   // -------------------------------------------------------------------------
-  // 異常系: invite の有効性
+  // 異常系: invite の有効性・単回消費化
   // -------------------------------------------------------------------------
-  describe("異常系: 招待トークンの有効性", () => {
-    test("存在しないinviteToken（maybeSingleがdata:null）→ 4xx＋一律エラー文言", async () => {
-      const mock = makeMockSupabaseClient({ inviteResult: { data: null, error: null } });
+  describe("異常系: 招待トークンの有効性・単回消費化", () => {
+    test("consumeが0行ヒット（不存在・使用済み・期限切れのいずれか）→ 410＋一律エラー文言、participants insertされず、クッキーも設定されない", async () => {
+      const mock = makeMockSupabaseClient({ consumeResult: { data: null, error: null } });
       mockedGetSupabaseAdminClient.mockReturnValue(mock.client);
 
       const response = await POST(makeRequest(validBody()));
 
-      expect(response.status).toBeGreaterThanOrEqual(400);
-      expect(response.status).toBeLessThan(500);
+      expect(response.status).toBe(410);
       const json = await response.json();
       expect(json.error).toContain("招待リンクは無効か、有効期限が切れています");
       expect(mock.participantInsert).not.toHaveBeenCalled();
+      expect(response.cookies.get(GUEST_COOKIE_NAME)).toBeUndefined();
+      expect(mockedSignGuestToken).not.toHaveBeenCalled();
+      // 0行ヒットのため補償も不要（そもそも消費できていない）
+      expect(mock.compensateEq).not.toHaveBeenCalled();
     });
 
-    test("期限切れ（expires_atが過去）→ 4xx＋一律エラー文言", async () => {
-      const mock = makeMockSupabaseClient({
-        inviteResult: {
-          data: { room_id: "room-1", expires_at: pastIso(), room: { status: "active" } },
-          error: null,
-        },
-      });
+    test("使用済みトークンで2回目のjoinを試みる（consumeが0行ヒット）→ 410で拒否される（単回消費化の主目的）", async () => {
+      // 1回目で既に used_at が書き込まれているため、2回目の
+      // update(...).eq("token",x).is("used_at",null)... は0行ヒットになる
+      // （このテストのシナリオを模したモック: 2回目呼び出しなのでdata:null）。
+      const mock = makeMockSupabaseClient({ consumeResult: { data: null, error: null } });
       mockedGetSupabaseAdminClient.mockReturnValue(mock.client);
 
-      const response = await POST(makeRequest(validBody()));
+      const response = await POST(makeRequest(validBody({ inviteToken: "already-used-token" })));
 
-      expect(response.status).toBeGreaterThanOrEqual(400);
-      expect(response.status).toBeLessThan(500);
-      const json = await response.json();
-      expect(json.error).toContain("招待リンクは無効か、有効期限が切れています");
-      expect(mock.participantInsert).not.toHaveBeenCalled();
-    });
-
-    test("ルームがactiveでない（例: closed）→ 4xx＋一律エラー文言", async () => {
-      const mock = makeMockSupabaseClient({
-        inviteResult: {
-          data: { room_id: "room-1", expires_at: futureIso(), room: { status: "closed" } },
-          error: null,
-        },
-      });
-      mockedGetSupabaseAdminClient.mockReturnValue(mock.client);
-
-      const response = await POST(makeRequest(validBody()));
-
-      expect(response.status).toBeGreaterThanOrEqual(400);
-      expect(response.status).toBeLessThan(500);
-      const json = await response.json();
-      expect(json.error).toContain("招待リンクは無効か、有効期限が切れています");
+      expect(response.status).toBe(410);
       expect(mock.participantInsert).not.toHaveBeenCalled();
     });
 
     test("invite照合クエリがエラーを返す（DB障害）→ 5xx＋一律エラー文言（内部詳細は含まない）", async () => {
       const mock = makeMockSupabaseClient({
-        inviteResult: { data: null, error: { message: "connection refused" } },
+        consumeResult: { data: null, error: { message: "connection refused" } },
       });
       mockedGetSupabaseAdminClient.mockReturnValue(mock.client);
 
@@ -355,6 +387,30 @@ describe("POST /api/guest/join", () => {
       const json = await response.json();
       expect(json.error).not.toContain("connection refused");
       expect(mock.participantInsert).not.toHaveBeenCalled();
+    });
+
+    test("consume成功だがルームがactiveでない（例: closed）→ 補償update（used_at:null）がinviteIdで呼ばれ、410＋一律エラー文言", async () => {
+      const mock = makeMockSupabaseClient({
+        consumeResult: {
+          data: { id: "invite-1", room_id: "room-1", room: { status: "closed" } },
+          error: null,
+        },
+      });
+      mockedGetSupabaseAdminClient.mockReturnValue(mock.client);
+
+      const response = await POST(makeRequest(validBody()));
+
+      expect(response.status).toBe(410);
+      const json = await response.json();
+      expect(json.error).toContain("招待リンクは無効か、有効期限が切れています");
+      expect(mock.participantInsert).not.toHaveBeenCalled();
+
+      // 補償: update({used_at: null}).eq("id", "invite-1")
+      const compensatePayloadCall = mock.invitesUpdate.mock.calls.find(
+        (call) => call[0]?.used_at === null,
+      );
+      expect(compensatePayloadCall).toBeDefined();
+      expect(mock.compensateEq).toHaveBeenCalledWith("id", "invite-1");
     });
   });
 
@@ -417,10 +473,10 @@ describe("POST /api/guest/join", () => {
   // 異常系: participants insert 失敗
   // -------------------------------------------------------------------------
   describe("異常系: participants insert 失敗", () => {
-    test("insertがerrorを返す → 一律エラー、クッキー未設定", async () => {
+    test("insertがerrorを返す → 一律エラー、クッキー未設定、補償updateが呼ばれる", async () => {
       const mock = makeMockSupabaseClient({
-        inviteResult: {
-          data: { room_id: "room-1", expires_at: futureIso(), room: { status: "active" } },
+        consumeResult: {
+          data: { id: "invite-1", room_id: "room-1", room: { status: "active" } },
           error: null,
         },
         participantInsertResult: { data: null, error: { message: "unique violation" } },
@@ -434,12 +490,15 @@ describe("POST /api/guest/join", () => {
       expect(json.error).not.toContain("unique violation");
       expect(response.cookies.get(GUEST_COOKIE_NAME)).toBeUndefined();
       expect(mockedSignGuestToken).not.toHaveBeenCalled();
+
+      // 補償: update({used_at: null}).eq("id", "invite-1")
+      expect(mock.compensateEq).toHaveBeenCalledWith("id", "invite-1");
     });
 
-    test("insertがdata:nullをerrorなしで返す → 一律エラー、クッキー未設定", async () => {
+    test("insertがdata:nullをerrorなしで返す → 一律エラー、クッキー未設定、補償updateが呼ばれる", async () => {
       const mock = makeMockSupabaseClient({
-        inviteResult: {
-          data: { room_id: "room-1", expires_at: futureIso(), room: { status: "active" } },
+        consumeResult: {
+          data: { id: "invite-1", room_id: "room-1", room: { status: "active" } },
           error: null,
         },
         participantInsertResult: { data: null, error: null },
@@ -450,6 +509,26 @@ describe("POST /api/guest/join", () => {
 
       expect(response.status).toBeGreaterThanOrEqual(500);
       expect(response.cookies.get(GUEST_COOKIE_NAME)).toBeUndefined();
+      expect(mock.compensateEq).toHaveBeenCalledWith("id", "invite-1");
+    });
+
+    test("補償update自体が失敗しても（ログのみで）一律エラー文言はそのまま返す", async () => {
+      const mock = makeMockSupabaseClient({
+        consumeResult: {
+          data: { id: "invite-1", room_id: "room-1", room: { status: "active" } },
+          error: null,
+        },
+        participantInsertResult: { data: null, error: { message: "unique violation" } },
+        compensateResult: { error: { message: "compensation failed" } },
+      });
+      mockedGetSupabaseAdminClient.mockReturnValue(mock.client);
+
+      const response = await POST(makeRequest(validBody()));
+
+      expect(response.status).toBeGreaterThanOrEqual(500);
+      const json = await response.json();
+      expect(json.error).not.toContain("compensation failed");
+      expect(json.error).not.toContain("unique violation");
     });
   });
 });

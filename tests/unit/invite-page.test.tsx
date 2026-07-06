@@ -10,6 +10,9 @@
  * `resolveInviteBaseUrl` は実装のまま利用し、`APP_BASE_URL` を設定して
  * ヘッダ（`next/headers`）参照を経由しない経路に固定する
  * （未設定時はリクエストコンテキスト外の `headers()` 呼び出しでエラーになるため）。
+ *
+ * 単回消費化（bd-1oy）: 既存招待の再利用検索は `.is("used_at", null)` を
+ * 条件に含める（使用済みの招待を再度案内しないため）。
  */
 import { render, screen } from "@testing-library/react";
 import "@testing-library/jest-dom";
@@ -42,7 +45,8 @@ function makeRoomsBuilder(result: { data: unknown; error: { message: string } | 
 
 /**
  * invites テーブル用チェイン可能ビルダー。
- * `.select().eq().gt().order().limit().maybeSingle()`（既存招待の検索）と
+ * `.select().eq().is().gt().order().limit().maybeSingle()`（既存招待の検索。
+ * 単回消費化 bd-1oy により `.is("used_at", null)` が条件に加わる）と
  * `.insert().select().single()`（新規発行）の両方をサポートする
  * （同一ビルダーオブジェクト上で `maybeSingle` と `single` の終端が異なるため両立する）。
  */
@@ -51,7 +55,7 @@ function makeInvitesBuilder(
   insertResult?: { data: unknown; error: { message: string } | null },
 ) {
   const builder: Record<string, jest.Mock> = {};
-  for (const method of ["select", "eq", "gt", "order", "limit", "insert"]) {
+  for (const method of ["select", "eq", "is", "gt", "order", "limit", "insert"]) {
     builder[method] = jest.fn(() => builder);
   }
   builder.maybeSingle = jest.fn().mockResolvedValue(existingInviteResult);
@@ -135,7 +139,7 @@ describe("InvitePage", () => {
     expect(notFoundMock).toHaveBeenCalled();
   });
 
-  it("有効期限内の既存invite があれば再利用し、insertは呼ばれない", async () => {
+  it("有効期限内かつ未使用の既存invite があれば再利用し、insertは呼ばれない", async () => {
     const futureIso = new Date(Date.now() + 60 * 60 * 1000).toISOString();
     const { invitesBuilder } = setupSupabaseMock({
       roomsResult: { data: { id: "room-1", status: "active" }, error: null },
@@ -148,6 +152,8 @@ describe("InvitePage", () => {
     const result = await InvitePage({ params: Promise.resolve({ roomId: "room-1" }) });
     render(result);
 
+    // 単回消費化（bd-1oy）: 既存招待の検索条件に is("used_at", null) が含まれる
+    expect(invitesBuilder.is).toHaveBeenCalledWith("used_at", null);
     expect(invitesBuilder.insert).not.toHaveBeenCalled();
     expect(
       screen.getByRole("link", { name: "https://default.example.com/join/existing-token-abc" }),
@@ -183,6 +189,34 @@ describe("InvitePage", () => {
     );
     expect(
       screen.getByRole("link", { name: "https://default.example.com/join/new-token-xyz" }),
+    ).toBeInTheDocument();
+  });
+
+  it("使用済み招待しか存在しない場合（is(\"used_at\",null)条件により既存検索が0件）→ 再利用されず新規発行される（単回消費化 bd-1oy）", async () => {
+    // 実装の `.is("used_at", null)` により、使用済みの招待は既存招待検索の
+    // maybeSingle 結果から除外される（data: null として返る）。このテストは
+    // その場合に既存招待が再利用されず、新規招待が発行されることを検証する
+    // （単回消費化の目的: 消費済みトークンを再度案内しないこと）。
+    const insertedExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    const { invitesBuilder } = setupSupabaseMock({
+      roomsResult: { data: { id: "room-1", status: "active" }, error: null },
+      // used_at is null 条件により、使用済み招待は該当なし(data:null)として返る
+      existingInviteResult: { data: null, error: null },
+      insertResult: {
+        data: { token: "fresh-token-after-used", expires_at: insertedExpiresAt },
+        error: null,
+      },
+    });
+
+    const result = await InvitePage({ params: Promise.resolve({ roomId: "room-1" }) });
+    render(result);
+
+    expect(invitesBuilder.is).toHaveBeenCalledWith("used_at", null);
+    expect(invitesBuilder.insert).toHaveBeenCalledTimes(1);
+    expect(
+      screen.getByRole("link", {
+        name: "https://default.example.com/join/fresh-token-after-used",
+      }),
     ).toBeInTheDocument();
   });
 

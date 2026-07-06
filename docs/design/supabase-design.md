@@ -106,13 +106,18 @@ QR読込 → /join/[token]
   Server Component: invites を token で照合（期限切れ/無効ならエラー画面）
     → 名前入力フォーム（Client Component）
       → POST /api/guest/join（Route Handler, Node.js Runtime。bd-jny で実装）
-         1. token 再照合（期限・有効性）
+         1. token を**原子的に消費**（`update invites set used_at=now() where token=? and
+            used_at is null and expires_at>now()`。単回消費化、bd-1oy）し、room が active か確認
          2. participants 行を作成（service_role）: role=guest, room_id, display_name, language=en-US
          3. ゲストJWT を発行: jose SignJWT { roomId, participantId, exp } / HS256 / GUEST_COOKIE_SECRET
          4. Set-Cookie: gtt_guest=<jwt>; HttpOnly; Secure; SameSite=Lax; Path=/
          5. /room/[roomId] へ redirect
 ```
 
+- **単回消費化（bd-1oy）**: 招待は1回参加に使われると `used_at` が設定され再利用不可になる。
+  元ゲスト切断後に招待URL/QRを入手した第三者が別 participant で参加してしまう問題への対策。
+  同一ゲスト本人の再入室は次項の `gtt_guest` クッキーによる復帰であり invite を再消費しないため、
+  単回消費化の影響を受けない。
 - 生成した `participants.id` を JWT の `participantId` に載せ、再接続・再開時の同一参加者復帰に使う（FR-3.2 / FR-12.3）。
 - `/room/[roomId]` の Server Component はゲストクッキーを検証（`jose` verify）し、`roomId`・`participantId` の整合を確認してから RoomClient へ最小 props を渡す（無ければ `/join` へ誘導）。
 - WSサーバーは同じ `shared/auth/guestToken.ts` でトークンを検証する（[server-design.md](./server-design.md#接続時認証verifyparticipant) 参照）。Next.js と WS で検証実装を共有し二重管理を避ける。

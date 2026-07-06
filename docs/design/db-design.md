@@ -198,10 +198,17 @@ owner/guest の両方を1テーブルで扱う。1:N のため room に対し複
 | `room_id` | `uuid` | FK→`rooms.id`, NOT NULL | |
 | `token` | `text` | UNIQUE, NOT NULL | 招待トークン（QRにエンコード） |
 | `expires_at` | `timestamptz` | NOT NULL | 有効期限（例: 作成から24〜48時間） |
+| `used_at` | `timestamptz` | NULL可 | 消費日時（null=未使用）。単回消費化（bd-1oy） |
 | `created_at` | `timestamptz` | default now() | |
 
 - QR は `https://{host}/join/{token}` を丸ごとエンコード（[app-architecture.md](./app-architecture.md#next-js-ページ構成とルーティング) 参照）。
-- `/join/[token]` の Server Component がトークンを照合（期限切れ/無効はエラー画面）。参加確定時に `participants` 行を作成しゲストクッキーを発行する（[supabase-design.md](./supabase-design.md#ゲストのクッキー識別との連携) 参照）。
+- `/join/[token]` の Server Component がトークンを照合（期限切れ/無効/使用済みはエラー画面）。参加確定時に `participants` 行を作成しゲストクッキーを発行する（[supabase-design.md](./supabase-design.md#ゲストのクッキー識別との連携) 参照）。
+- **単回消費化（bd-1oy）**: `used_at` が null 以外の招待は再利用不可。`POST /api/guest/join` が
+  `update invites set used_at=now() where token=? and used_at is null and expires_at>now()`
+  を1文で実行し、「未使用確認」と「使用済みマーク」を原子化する（同時アクセスでも消費に成功するのは1回のみ）。
+  元ゲスト切断後に招待URL/QRを入手した第三者が別 participant で参加できてしまう問題への対策
+  （1対1のプライベート会話の前提を維持するため）。同一ゲスト本人の再入室は `gtt_guest`
+  クッキーで行われ invite を再消費しないため、単回消費化の影響を受けない。
 - 再開（FR-12.3）: オーナーが再度招待すると新しい invite を発行。ゲストクッキーが残っていれば既存 participant として復帰（`participants.id` で突合）。
 
 ---
