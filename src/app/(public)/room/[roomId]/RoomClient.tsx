@@ -169,11 +169,14 @@ export function RoomClient({
     audioQueueRef.current?.setEnabled(ttsEnabled);
   }, [ttsEnabled]);
 
-  // 半二重ゲート（bd-0ee）: 自デバイスのTTS再生中（＋残響猶予）はマイク音声の
-  // WS送信を抑止し、再生音の再認識による翻訳の無限ループを防ぐ。
+  // 半二重ゲート（bd-0ee/bd-rwi/bd-dnh）: 自分または相手のTTS再生中（＋残響猶予）
+  // はマイクトラックを一時ミュートし、再生音の再認識による翻訳の無限ループを防ぐ。
+  // 送信自体は継続する（無音を送る）— 送信を止めるとSTTがAudio Timeoutするため。
   // （キュー・ゲートの生成 effect は `sendMessage` 定義後に配置している —
   //   依存配列はレンダー時に評価されるため、const の初期化前だと TDZ になる）
   const halfDuplexRef = useRef<HalfDuplexGate | null>(null);
+  // ゲートの抑止状態を Recorder の muted prop へ反映するための state。
+  const [micMuted, setMicMuted] = useState(false);
 
   /**
    * WS へ型安全にメッセージを送信するラッパー。
@@ -191,12 +194,21 @@ export function RoomClient({
   useEffect(() => {
     // 生成時点では Audio 要素は作られない（enqueue 時に初めてファクトリが
     // 実行される）ため、副作用としては軽量。
-    const gate = createHalfDuplexGate();
+    //
+    // 抑止状態の変化は Recorder の muted prop（マイクトラックの一時ミュート）へ
+    // 反映する（bd-dnh）。録音・チャンク送信は継続する（無音が送られる）ため
+    // STTストリームは途切れない。
+    // 注: TTSトグルをOFFにした直後は、再生中の1件が最後まで再生される既存仕様
+    // （audioPlaybackQueue.setEnabled の設計判断）に伴い、その再生が終わるまで
+    // ミュートも継続する（意図した挙動。スピーカーから音が出ている間は拾い得るため）。
+    const gate = createHalfDuplexGate(undefined, (suppressed) => {
+      setMicMuted(suppressed);
+    });
     halfDuplexRef.current = gate;
     const queue = createAudioPlaybackQueue(undefined, (playing) => {
       gate.onPlaybackStateChange(playing);
       // 相互半二重化（bd-rwi）: 自分の再生状態を同室の相手へ中継してもらう
-      // （相手側は peer_playback_state を受けて自分のマイク送信を抑止する）。
+      // （相手側は peer_playback_state を受けて自分のマイクをミュートする）。
       // 未接続時は sendMessage 側のガードでスキップされる（切断中に false を
       // 送り損ねても、相手側は participant_joined/joined で残留状態をクリアする）。
       sendMessage({ type: "playback_state", playing });
@@ -212,26 +224,6 @@ export function RoomClient({
     };
     // sendMessage は useCallback([]) の安定参照のため、実質マウント時1回のみ実行。
   }, [sendMessage]);
-
-  /**
-   * Recorder 用の送信ラッパー（bd-0ee 半二重制御）。
-   * 自デバイスのTTS再生中（＋残響猶予）は `audio` チャンクのみ送信を抑止する
-   * （再生音をマイクが拾って翻訳が無限ループするのを防ぐ）。
-   * `start`/`stop`/`commit` 等の制御メッセージは常に通す。
-   *
-   * 注: TTSトグルをOFFにした直後は、再生中の1件が最後まで再生される既存仕様
-   * （audioPlaybackQueue.setEnabled の設計判断）に伴い、その再生が終わるまで
-   * 抑止も継続する（意図した挙動。スピーカーから音が出ている間は拾い得るため）。
-   */
-  const recorderSendMessage = useCallback(
-    (message: ClientMessage) => {
-      if (message.type === "audio" && halfDuplexRef.current?.shouldSuppressAudio()) {
-        return;
-      }
-      sendMessage(message);
-    },
-    [sendMessage],
-  );
 
   /**
    * TTSトグル操作時のハンドラ。ローカル状態（audioQueueの再生可否・次回
@@ -615,7 +607,8 @@ export function RoomClient({
 
       <Recorder
         language={currentLanguage}
-        sendMessage={recorderSendMessage}
+        sendMessage={sendMessage}
+        muted={micMuted}
         disabled={!isJoinedOrRecording || state.roomEnded}
         forceStop={state.roomEnded}
         enableTts={ttsEnabled}

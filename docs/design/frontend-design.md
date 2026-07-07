@@ -97,7 +97,9 @@ app/(owner)/rooms/[roomId]/page.tsx     (Server Component: 認証・所有者確
 
 - 自分が**聞き手として**翻訳音声を受け取るか（FR-6.1）。ON/OFF を `update_settings`（`enableTts`）で送り、次の相手発話から反映。テキスト表示はトグルに関係なく常時（FR-6.2）。
 - 言語別 TTS（`ttsByLanguage`）はプロトタイプ同様クライアントで保持し、送信時に boolean へ解決してよい（MVP は単純 ON/OFF で可）。
-- **TTSと録音の半二重制約（bd-0ee、本番実機で確定した制約）**: 対面利用ではデバイスが近接するため、自デバイスのTTS再生音を自分のマイクが拾い「再生音→誤認識→翻訳→相手側で再生→…」の無限ループが発生しうる。対策として、**自デバイスでTTS再生中（＋残響猶予 300ms）はマイク音声（`audio` チャンク）のWS送信を抑止する**（録音は継続、`start`/`stop`/`commit` は通す）。実装は `halfDuplex.ts`（純粋モジュール）＋ `audioPlaybackQueue` の再生状態変化通知＋ `RoomClient` の送信ラッパー。
+- **TTSと録音の半二重制約（bd-0ee/bd-rwi/bd-dnh、本番実機で確定した制約）**: 対面利用ではデバイスが近接するため、TTS再生音をマイクが拾い「再生音→誤認識→翻訳→再生→…」の無限ループが発生しうる（自デバイスのスピーカー経由と、**相手デバイス**のスピーカー経由の両方）。対策として、**自分または同室の誰かがTTS再生中（＋残響猶予 300ms）はマイクトラックを一時ミュートする**（`MediaStreamTrack.enabled=false`。bd-dnh で方式確定）。相手の再生状態は WS の `playback_state`→`peer_playback_state` 中継で知る（[websocket-protocol.md](./websocket-protocol.md) 参照）。
+  - **ミュート方式の理由**: 録音・チャンク送信は継続し**無音が送られる**ため、Google Streaming STT のストリームが途切れない。当初の「audio チャンクの送信を落とす」方式は、供給停止が長いと STT が `Audio Timeout Error` でストリームを落とし「Speech recognition stream timed out」エラーが頻発したため不採用（本番実機で確認）。
+  - 実装: `halfDuplex.ts`（純粋モジュール、抑止状態の変化通知）＋ `audioPlaybackQueue` の再生状態変化通知＋ `Recorder` の `muted` prop。
 
 ### QRDisplay（owner のみ）
 

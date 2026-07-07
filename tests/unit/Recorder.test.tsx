@@ -47,7 +47,12 @@ describe("Recorder", () => {
   });
 
   function makeStream() {
-    return { getTracks: () => [{ stop: jest.fn() }] };
+    const track = { stop: jest.fn(), enabled: true };
+    return {
+      getTracks: () => [track],
+      getAudioTracks: () => [track],
+      track, // テストから enabled を検証するための参照
+    };
   }
 
   it("開始ボタンを連打してもgetUserMediaは1回しか呼ばれない", async () => {
@@ -221,6 +226,51 @@ describe("Recorder", () => {
         .filter((m) => m.type === "stop");
       expect(stopMessages).toHaveLength(0);
       expect(screen.getByRole("button", { name: "開始" })).toBeInTheDocument();
+    });
+  });
+
+  describe("muted（半二重のマイクトラック一時ミュート、bd-dnh）", () => {
+    it("muted切替でマイクトラックのenabledがトグルされる（録音・送信は継続）", async () => {
+      const user = userEvent.setup();
+      const sendMessage = jest.fn();
+      const { rerender } = render(
+        <Recorder language="ja-JP" sendMessage={sendMessage} muted={false} />,
+      );
+
+      await user.click(screen.getByRole("button", { name: "開始" }));
+      const stream = makeStream();
+      await act(async () => {
+        resolveGetUserMedia?.(stream);
+      });
+      await waitFor(() => {
+        expect(screen.getByText("状態: 録音中")).toBeInTheDocument();
+      });
+      expect(stream.track.enabled).toBe(true);
+
+      rerender(<Recorder language="ja-JP" sendMessage={sendMessage} muted={true} />);
+      expect(stream.track.enabled).toBe(false);
+      // ミュート中も録音状態は継続する（停止しない）
+      expect(screen.getByText("状態: 録音中")).toBeInTheDocument();
+
+      rerender(<Recorder language="ja-JP" sendMessage={sendMessage} muted={false} />);
+      expect(stream.track.enabled).toBe(true);
+    });
+
+    it("muted=trueの間に録音を開始した場合、最初からトラックが無効で開始される", async () => {
+      const user = userEvent.setup();
+      const sendMessage = jest.fn();
+      render(<Recorder language="ja-JP" sendMessage={sendMessage} muted={true} />);
+
+      await user.click(screen.getByRole("button", { name: "開始" }));
+      const stream = makeStream();
+      await act(async () => {
+        resolveGetUserMedia?.(stream);
+      });
+      await waitFor(() => {
+        expect(screen.getByText("状態: 録音中")).toBeInTheDocument();
+      });
+
+      expect(stream.track.enabled).toBe(false);
     });
   });
 });

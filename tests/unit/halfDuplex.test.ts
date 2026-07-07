@@ -147,4 +147,48 @@ describe("createHalfDuplexGate", () => {
       expect(gate.shouldSuppressAudio()).toBe(true);
     });
   });
+
+  describe("抑止状態の変化通知（onSuppressionChange、bd-dnh）", () => {
+    it("抑止開始でtrue、猶予経過後の解除でfalseが通知される（重複なし）", () => {
+      const changes: boolean[] = [];
+      const gate = createHalfDuplexGate(undefined, (suppressed) => changes.push(suppressed));
+
+      gate.onPlaybackStateChange(true);
+      expect(changes).toEqual([true]);
+
+      // 再生中の追加イベントでは重複通知されない
+      gate.onPeerPlaybackStateChange("peer-1", true);
+      expect(changes).toEqual([true]);
+
+      gate.onPlaybackStateChange(false);
+      gate.onPeerPlaybackStateChange("peer-1", false);
+      expect(changes).toEqual([true]); // 猶予中はまだ抑止
+
+      jest.advanceTimersByTime(TTS_ECHO_GRACE_MS);
+      expect(changes).toEqual([true, false]);
+    });
+
+    it("猶予中に再生が再開した場合、falseは通知されない", () => {
+      const changes: boolean[] = [];
+      const gate = createHalfDuplexGate(undefined, (suppressed) => changes.push(suppressed));
+
+      gate.onPlaybackStateChange(true);
+      gate.onPlaybackStateChange(false);
+      jest.advanceTimersByTime(TTS_ECHO_GRACE_MS - 50);
+      gate.onPlaybackStateChange(true); // 猶予中に再開
+
+      jest.advanceTimersByTime(1000);
+      expect(changes).toEqual([true]); // true→(解除なし)のまま
+    });
+
+    it("抑止中のdisposeでfalseが通知される（マウント解除時のミュート解放）", () => {
+      const changes: boolean[] = [];
+      const gate = createHalfDuplexGate(undefined, (suppressed) => changes.push(suppressed));
+
+      gate.onPlaybackStateChange(true);
+      gate.dispose();
+
+      expect(changes).toEqual([true, false]);
+    });
+  });
 });
