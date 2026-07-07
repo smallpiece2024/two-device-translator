@@ -370,7 +370,8 @@ describe("RoomClient", () => {
       },
     });
     const getUserMediaMock = jest.fn().mockResolvedValue({
-      getTracks: () => [{ stop: jest.fn() }],
+      getTracks: () => [{ stop: jest.fn(), enabled: true }],
+      getAudioTracks: () => [{ stop: jest.fn(), enabled: true }],
     });
     Object.defineProperty(navigator, "mediaDevices", {
       value: { getUserMedia: getUserMediaMock },
@@ -737,7 +738,8 @@ describe("RoomClient", () => {
         },
       });
       const getUserMediaMock = jest.fn().mockResolvedValue({
-        getTracks: () => [{ stop: jest.fn() }],
+        getTracks: () => [{ stop: jest.fn(), enabled: true }],
+        getAudioTracks: () => [{ stop: jest.fn(), enabled: true }],
       });
       Object.defineProperty(navigator, "mediaDevices", {
         value: { getUserMedia: getUserMediaMock },
@@ -883,7 +885,8 @@ describe("RoomClient", () => {
         },
       });
       const getUserMediaMock = jest.fn().mockResolvedValue({
-        getTracks: () => [{ stop: jest.fn() }],
+        getTracks: () => [{ stop: jest.fn(), enabled: true }],
+        getAudioTracks: () => [{ stop: jest.fn(), enabled: true }],
       });
       Object.defineProperty(navigator, "mediaDevices", {
         value: { getUserMedia: getUserMediaMock },

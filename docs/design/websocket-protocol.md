@@ -158,7 +158,7 @@ MediaRecorder の Blob を base64 化（WebM/Opus 48kHz）。STTストリーム�
 
 自デバイスのTTS再生状態（audioPlaybackQueue の再生開始/停止）をサーバーへ通知する。サーバーは同室の**他**参加者へ `peer_playback_state` として中継する（送信者本人には返さない。状態の永続化・サーバー側保持はしない）。
 
-対面利用では相手端末のスピーカー音を自分のマイクが拾い、「翻訳音声→発話として誤認識→翻訳→再生→…」の音響フィードバックループが発生しうる（本番実機で確認）。受信側は相手の再生中＋残響猶予の間、自分のマイク音声（`audio`）の送信を抑止する（**相互半二重**。[frontend-design.md「TTSと録音の半二重制約」](./frontend-design.md#ttstoggle) 参照）。
+対面利用では相手端末のスピーカー音を自分のマイクが拾い、「翻訳音声→発話として誤認識→翻訳→再生→…」の音響フィードバックループが発生しうる（本番実機で確認）。受信側は相手の再生中＋残響猶予の間、自分の**マイクトラックを一時ミュート**する（**相互半二重**。`audio` チャンクの送信自体は無音のまま継続する — 送信を止めるとSTTが Audio Timeout するため。bd-dnh。[frontend-design.md「TTSと録音の半二重制約」](./frontend-design.md#ttstoggle) 参照）。
 
 ---
 
@@ -199,7 +199,7 @@ MediaRecorder の Blob を base64 化（WebM/Opus 48kHz）。STTストリーム�
 { "type": "peer_playback_state", "participantId": "p_456", "playing": true }
 ```
 
-client → server の `playback_state` を、同室の**他**参加者へ中継したもの（送信者本人には配信しない）。受信側は `playing:true` の間＋残響猶予（300ms）、自分のマイク音声（`audio`）の送信を抑止する（相互半二重、音響フィードバックループ対策）。切断・再接続で `playing:false` を受け損ねる場合に備え、受信側は `participant_left` / `participant_joined` で該当参加者の記録を、自分の再接続（`joined`）で全記録をクリアする。
+client → server の `playback_state` を、同室の**他**参加者へ中継したもの（送信者本人には配信しない）。受信側は `playing:true` の間＋残響猶予（300ms）、自分の**マイクトラックを一時ミュート**する（相互半二重、音響フィードバックループ対策。`audio` の送信自体は無音のまま継続する）。切断・再接続で `playing:false` を受け損ねる場合に備え、受信側は `participant_left` / `participant_joined` で該当参加者の記録を、自分の再接続（`joined`）で全記録をクリアする。
 
 ### `transcript_interim` / `transcript_final` / `utterance_committed`（話者本人にのみ）
 

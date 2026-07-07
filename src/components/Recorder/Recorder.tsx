@@ -74,6 +74,14 @@ export interface RecorderProps {
    * 自身の状態変化を通知するのみ。
    */
   onStatusChange?: (status: RecorderStatus) => void;
+  /**
+   * true の間、マイクトラックを一時ミュートする（`MediaStreamTrack.enabled=false`。
+   * 半二重制御 bd-dnh: TTS再生中の音響フィードバック防止）。
+   * 録音・チャンク送信自体は継続する（無音が送られる）ため、サーバー側の
+   * STTストリームは途切れない（送信を止める方式は Audio Timeout を招くため不採用）。
+   * 既定 false。
+   */
+  muted?: boolean;
 }
 
 /**
@@ -94,6 +102,7 @@ export function Recorder({
   maxSeconds = DEFAULT_MAX_SECONDS,
   forceStop = false,
   onStatusChange,
+  muted = false,
 }: RecorderProps) {
   const [status, setStatus] = useState<RecorderStatus>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -119,6 +128,17 @@ export function Recorder({
   useEffect(() => {
     onStatusChangeRef.current = onStatusChange;
   }, [onStatusChange]);
+
+  // 半二重ミュート（bd-dnh）: muted の変化をマイクトラックへ反映する。
+  // getUserMedia 完了前に muted が変わるケースに備え、ref にも保持して
+  // ストリーム取得直後（handleStart 内）にも現在値を適用する。
+  const mutedRef = useRef(muted);
+  useEffect(() => {
+    mutedRef.current = muted;
+    streamRef.current?.getAudioTracks().forEach((track) => {
+      track.enabled = !muted;
+    });
+  }, [muted]);
 
   useEffect(() => {
     onStatusChangeRef.current?.(status);
@@ -180,6 +200,12 @@ export function Recorder({
     }
 
     streamRef.current = stream;
+
+    // 取得直後に現在のミュート状態を適用する（TTS再生中に録音を開始した場合、
+    // 最初から無音トラックで開始する。bd-dnh）。
+    stream.getAudioTracks().forEach((track) => {
+      track.enabled = !mutedRef.current;
+    });
 
     const supportedMimeType = getSupportedMimeType();
     const options: MediaRecorderOptions = supportedMimeType ? { mimeType: supportedMimeType } : {};
