@@ -171,26 +171,9 @@ export function RoomClient({
 
   // 半二重ゲート（bd-0ee）: 自デバイスのTTS再生中（＋残響猶予）はマイク音声の
   // WS送信を抑止し、再生音の再認識による翻訳の無限ループを防ぐ。
+  // （キュー・ゲートの生成 effect は `sendMessage` 定義後に配置している —
+  //   依存配列はレンダー時に評価されるため、const の初期化前だと TDZ になる）
   const halfDuplexRef = useRef<HalfDuplexGate | null>(null);
-
-  useEffect(() => {
-    // 生成時点では Audio 要素は作られない（enqueue 時に初めてファクトリが
-    // 実行される）ため、副作用としては軽量。
-    const gate = createHalfDuplexGate();
-    halfDuplexRef.current = gate;
-    const queue = createAudioPlaybackQueue(undefined, (playing) => {
-      gate.onPlaybackStateChange(playing);
-    });
-    queue.setEnabled(ttsEnabledRef.current);
-    audioQueueRef.current = queue;
-
-    return () => {
-      queue.dispose();
-      audioQueueRef.current = null;
-      gate.dispose();
-      halfDuplexRef.current = null;
-    };
-  }, []);
 
   /**
    * WS へ型安全にメッセージを送信するラッパー。
@@ -204,6 +187,31 @@ export function RoomClient({
     }
     socket.send(JSON.stringify(message));
   }, []);
+
+  useEffect(() => {
+    // 生成時点では Audio 要素は作られない（enqueue 時に初めてファクトリが
+    // 実行される）ため、副作用としては軽量。
+    const gate = createHalfDuplexGate();
+    halfDuplexRef.current = gate;
+    const queue = createAudioPlaybackQueue(undefined, (playing) => {
+      gate.onPlaybackStateChange(playing);
+      // 相互半二重化（bd-rwi）: 自分の再生状態を同室の相手へ中継してもらう
+      // （相手側は peer_playback_state を受けて自分のマイク送信を抑止する）。
+      // 未接続時は sendMessage 側のガードでスキップされる（切断中に false を
+      // 送り損ねても、相手側は participant_joined/joined で残留状態をクリアする）。
+      sendMessage({ type: "playback_state", playing });
+    });
+    queue.setEnabled(ttsEnabledRef.current);
+    audioQueueRef.current = queue;
+
+    return () => {
+      queue.dispose();
+      audioQueueRef.current = null;
+      gate.dispose();
+      halfDuplexRef.current = null;
+    };
+    // sendMessage は useCallback([]) の安定参照のため、実質マウント時1回のみ実行。
+  }, [sendMessage]);
 
   /**
    * Recorder 用の送信ラッパー（bd-0ee 半二重制御）。
@@ -386,6 +394,9 @@ export function RoomClient({
             // 間に合わせるため、useEffect経由の同期を待たずここで同期的に
             // 設定する（useEffect側の同期は他経路からの更新のためそのまま残す）。
             selfParticipantIdRef.current = message.participantId;
+            // 再接続時、切断中に受け損ねた peer_playback_state(false) により
+            // 「相手が再生中」の記録が残留しうるためリセットする（bd-rwi）。
+            halfDuplexRef.current?.clearPeers();
             dispatch({
               type: "JOINED",
               participantId: message.participantId,
@@ -405,10 +416,25 @@ export function RoomClient({
             // （docs/design/frontend-design.md 状態管理(reducer)節）。
             break;
           case "participant_joined":
+            // 再接続してきた参加者の再生状態は不明（未再生とみなす）ため、
+            // 残留していた「再生中」記録をクリアする（bd-rwi）。
+            halfDuplexRef.current?.clearPeer(message.participant.participantId);
             dispatch({ type: "PARTICIPANT_JOINED", participant: message.participant });
             break;
           case "participant_left":
+            // 退室した参加者の「再生中」記録が残ると抑止が解除されなくなるため
+            // クリアする（bd-rwi）。
+            halfDuplexRef.current?.clearPeer(message.participantId);
             dispatch({ type: "PARTICIPANT_LEFT", participantId: message.participantId });
+            break;
+          case "peer_playback_state":
+            // 相互半二重化（bd-rwi）: 相手端末のTTS再生中は自分のマイク送信を
+            // 抑止する（相手のスピーカー音を自分のマイクが拾う音響フィードバック
+            // ループの防止）。
+            halfDuplexRef.current?.onPeerPlaybackStateChange(
+              message.participantId,
+              message.playing,
+            );
             break;
           case "participant_updated":
             // 本人を含む全参加者へ配信される（bd-ecb で確定した配信範囲）。

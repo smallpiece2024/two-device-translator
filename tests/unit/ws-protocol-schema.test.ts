@@ -108,6 +108,15 @@ describe("ws-protocol schema", () => {
       const input = { type: "stop" };
       expect(clientMessageSchema.parse(input)).toEqual(input);
     });
+
+    it("playback_state メッセージをparseできる（bd-rwi）", () => {
+      const input = { type: "playback_state", playing: true };
+      expect(clientMessageSchema.parse(input)).toEqual(input);
+    });
+
+    it("playback_state: playing 欠落を拒否する（bd-rwi）", () => {
+      expect(() => clientMessageSchema.parse({ type: "playback_state" })).toThrow();
+    });
   });
 
   describe("startSchema: detectLanguage デフォルト値", () => {
@@ -397,6 +406,15 @@ describe("ws-protocol schema", () => {
       const input = {
         type: "transcript_interim",
         text: "今日は雨が降っているので",
+      };
+      expect(serverMessageSchema.parse(input)).toEqual(input);
+    });
+
+    it("peer_playback_state メッセージをparseできる（bd-rwi）", () => {
+      const input = {
+        type: "peer_playback_state",
+        participantId: "p1",
+        playing: true,
       };
       expect(serverMessageSchema.parse(input)).toEqual(input);
     });

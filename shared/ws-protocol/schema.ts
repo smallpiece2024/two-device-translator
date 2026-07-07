@@ -85,6 +85,18 @@ export const requestEndSchema = z.object({
   type: z.literal("request_end"),
 });
 
+/**
+ * 自デバイスのTTS再生状態の通知（相互半二重化）。
+ * サーバーは同室の**他**参加者へ `peer_playback_state` として中継する。
+ * 対面利用で相手端末のスピーカー音を自分のマイクが拾う音響フィードバック
+ * ループを防ぐため、受信側は相手の再生中に自分のマイク送信を抑止する
+ * （docs/design/websocket-protocol.md「playback_state（再生状態通知）」参照）。
+ */
+export const playbackStateSchema = z.object({
+  type: z.literal("playback_state"),
+  playing: z.boolean(),
+});
+
 export const clientMessageSchema = z.discriminatedUnion("type", [
   joinSchema,
   updateSettingsSchema,
@@ -93,6 +105,7 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
   commitSchema,
   stopSchema,
   requestEndSchema,
+  playbackStateSchema,
 ]);
 
 // ─────────────────────────────────────────────
@@ -211,6 +224,18 @@ export const participantUpdatedSchema = z.object({
   language: LanguageEnum,
 });
 
+/**
+ * 他参加者のTTS再生状態の中継（相互半二重化、bd-rwi）。
+ * `playback_state` を受信したサーバーが、同室の**他**参加者へ配信する
+ * （送信者本人には返さない）。受信側は `playing:true` の間、自分のマイク
+ * 音声（`audio`）の送信を抑止する。
+ */
+export const peerPlaybackStateSchema = z.object({
+  type: z.literal("peer_playback_state"),
+  participantId: z.string().min(1),
+  playing: z.boolean(),
+});
+
 /** エラー通知。`fatal:true` の場合は接続終了 */
 export const errorSchema = z.object({
   type: z.literal("error"),
@@ -240,6 +265,7 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
   participantJoinedSchema,
   participantLeftSchema,
   participantUpdatedSchema,
+  peerPlaybackStateSchema,
   errorSchema,
   roomEndedSchema,
 ]);
