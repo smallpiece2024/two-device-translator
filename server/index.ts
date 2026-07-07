@@ -1,6 +1,7 @@
 import { WebSocketServer, WebSocket, RawData } from "ws";
 import {
   SHARED_PLACEHOLDER,
+  WS_CLOSE_CODE_SUPERSEDED,
   clientMessageSchema,
   type ServerMessage,
   type RoomEndedReason,
@@ -385,7 +386,10 @@ export function startServer(
               joinResult.previousSocket !== ws &&
               joinResult.previousSocket.readyState === joinResult.previousSocket.OPEN
             ) {
-              joinResult.previousSocket.close(4000, "reconnected from a new connection");
+              joinResult.previousSocket.close(
+                WS_CLOSE_CODE_SUPERSEDED,
+                "reconnected from a new connection"
+              );
             }
 
             // 既に在室している他参加者へ、新規参加/再接続を通知する

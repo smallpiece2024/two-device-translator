@@ -16,7 +16,7 @@ import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { RoomClient } from "@/app/(public)/room/[roomId]/RoomClient";
 import { createAudioPlaybackQueue } from "@/lib/audioPlaybackQueue";
-import type { ClientMessage, ServerMessage } from "@shared/index";
+import { WS_CLOSE_CODE_SUPERSEDED, type ClientMessage, type ServerMessage } from "@shared/index";
 
 jest.mock("@/lib/audioPlaybackQueue", () => ({
   createAudioPlaybackQueue: jest.fn(),
@@ -108,9 +108,9 @@ class MockWebSocket {
     );
   }
 
-  /** テストコードからの手動発火: クローズ */
-  dispatchClose(): void {
-    this.listeners.close.forEach((listener) => listener({}));
+  /** テストコードからの手動発火: クローズ（code省略時は通常の切断を模す） */
+  dispatchClose(code?: number): void {
+    this.listeners.close.forEach((listener) => listener({ code }));
   }
 
   /** 最後に送信された `join` メッセージの内容を取得するテストヘルパー */
@@ -1131,6 +1131,31 @@ describe("RoomClient", () => {
         jest.advanceTimersByTime(60_000);
       });
       expect(MockWebSocket.instances).toHaveLength(6);
+    });
+
+    it("code=4000(別接続への置き換え)でcloseされた場合は再接続せず終端メッセージを表示する（bd-8x0）", () => {
+      render(<RoomClient roomId="room-abc" wsUrl="ws://localhost:3001/ws" />);
+      const socket = latestSocket();
+
+      act(() => {
+        socket.dispatchOpen();
+      });
+      expect(MockWebSocket.instances).toHaveLength(1);
+
+      // 別ウィンドウの接続に置き換えられた（サーバーが code=4000 で close）
+      act(() => {
+        socket.dispatchClose(WS_CLOSE_CODE_SUPERSEDED);
+      });
+
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "別のウィンドウでこのルームが開かれたため、この画面の接続を終了しました。",
+      );
+
+      // タイマーを進めても再接続されない（蹴り合いループの防止）
+      act(() => {
+        jest.advanceTimersByTime(60_000);
+      });
+      expect(MockWebSocket.instances).toHaveLength(1);
     });
 
     it("サーバーからfatalなerrorを受信してcloseされた後は再接続されず、エラー文言もサーバー由来のまま維持される", () => {

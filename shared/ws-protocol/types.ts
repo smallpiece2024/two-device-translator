@@ -65,3 +65,14 @@ export type ErrorMessage = z.infer<typeof errorSchema>;
 export type RoomEndedReason = z.infer<typeof roomEndedReasonSchema>;
 export type RoomEndedMessage = z.infer<typeof roomEndedSchema>;
 export type ServerMessage = z.infer<typeof serverMessageSchema>;
+
+/**
+ * WebSocket close コード: 同一参加者の**新しい接続に置き換えられた**ことを示す
+ * （サーバーが古い接続を閉じる際に使用。RFC 6455 のアプリケーション定義領域
+ * 4000-4999）。
+ *
+ * このコードで閉じられた側は**再接続してはならない**。再接続すると今度は
+ * 新しい接続側が置き換えられて閉じられ、互いに蹴り合う無限ループになる
+ * （bd-8x0 で本番発生。同一ルームを2ウィンドウで開いた場合など）。
+ */
+export const WS_CLOSE_CODE_SUPERSEDED = 4000;
