@@ -12,6 +12,8 @@ import type {
   commitSchema,
   stopSchema,
   requestEndSchema,
+  playbackStateSchema,
+  peerPlaybackStateSchema,
   clientMessageSchema,
   participantSummarySchema,
   joinedSchema,
@@ -40,6 +42,8 @@ export type CommitMessage = z.infer<typeof commitSchema>;
 export type StopMessage = z.infer<typeof stopSchema>;
 /** オーナーによるルーム終了要求（bd-e3p） */
 export type RequestEndMessage = z.infer<typeof requestEndSchema>;
+/** 自デバイスのTTS再生状態通知（相互半二重化、bd-rwi） */
+export type PlaybackStateMessage = z.infer<typeof playbackStateSchema>;
 export type ClientMessage = z.infer<typeof clientMessageSchema>;
 
 // server → client
@@ -60,6 +64,8 @@ export type ParticipantLeftReason = z.infer<typeof participantLeftReasonSchema>;
 export type ParticipantLeftMessage = z.infer<typeof participantLeftSchema>;
 /** 参加者の設定変更イベント（bd-ecb で言語検出モード確定通知として追加。bd-fki で拡張） */
 export type ParticipantUpdatedMessage = z.infer<typeof participantUpdatedSchema>;
+/** 他参加者のTTS再生状態の中継（相互半二重化、bd-rwi） */
+export type PeerPlaybackStateMessage = z.infer<typeof peerPlaybackStateSchema>;
 export type ErrorMessage = z.infer<typeof errorSchema>;
 /** ルーム終了理由（bd-e3p）。`"owner_ended"` | `"auto_timeout"` */
 export type RoomEndedReason = z.infer<typeof roomEndedReasonSchema>;

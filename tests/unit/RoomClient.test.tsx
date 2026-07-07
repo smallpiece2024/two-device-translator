@@ -280,8 +280,13 @@ describe("RoomClient", () => {
     expect(queue.enqueue).toHaveBeenCalledWith("QkFTRTY0REFUQQ==");
   });
 
-  it("audioPlaybackQueueに再生状態変化コールバックが結線される（bd-0ee 半二重制御）", () => {
+  it("audioPlaybackQueueに再生状態変化コールバックが結線され、playback_stateがWS送信される（bd-0ee/bd-rwi）", () => {
     render(<RoomClient roomId="room-abc" wsUrl="ws://localhost:3001/ws" />);
+    const socket = latestSocket();
+
+    act(() => {
+      socket.dispatchOpen();
+    });
 
     // createAudioPlaybackQueue(playerFactory, onPlaybackStateChange) の
     // 第2引数に半二重ゲートへの通知関数が渡されていること
@@ -291,12 +296,43 @@ describe("RoomClient", () => {
       ];
     expect(typeof lastCall[1]).toBe("function");
 
-    // コールバックの呼び出しが例外なく処理されること（ゲートの状態遷移
-    // 自体の検証は tests/unit/halfDuplex.test.ts が担う）
+    // コールバックの呼び出しで、相手側の抑止用に playback_state がWS送信される
+    // こと（bd-rwi。ゲート自体の状態遷移は tests/unit/halfDuplex.test.ts が担う）
     const onPlaybackStateChange = lastCall[1] as (playing: boolean) => void;
-    expect(() => {
+    act(() => {
       onPlaybackStateChange(true);
       onPlaybackStateChange(false);
+    });
+
+    const sent = socket.getSentMessages();
+    const playbackStates = sent.filter((m) => m.type === "playback_state");
+    expect(playbackStates).toEqual([
+      { type: "playback_state", playing: true },
+      { type: "playback_state", playing: false },
+    ]);
+  });
+
+  it("peer_playback_state受信が例外なく処理される（bd-rwi。抑止判定はhalfDuplex側でテスト）", () => {
+    render(<RoomClient roomId="room-abc" wsUrl="ws://localhost:3001/ws" />);
+    const socket = latestSocket();
+
+    act(() => {
+      socket.dispatchOpen();
+    });
+
+    expect(() => {
+      act(() => {
+        socket.dispatchMessage({
+          type: "peer_playback_state",
+          participantId: "peer-1",
+          playing: true,
+        });
+        socket.dispatchMessage({
+          type: "peer_playback_state",
+          participantId: "peer-1",
+          playing: false,
+        });
+      });
     }).not.toThrow();
   });
 

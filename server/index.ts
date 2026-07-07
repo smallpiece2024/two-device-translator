@@ -493,6 +493,33 @@ export function startServer(
           return;
         }
 
+        case "playback_state": {
+          // 相互半二重化（bd-rwi）: 自デバイスのTTS再生状態を同室の**他**参加者へ
+          // 中継する。受信側は相手の再生中に自分のマイク送信を抑止し、対面利用で
+          // 相手端末のスピーカー音を拾う音響フィードバックループを防ぐ。
+          // 状態は永続化せずリアルタイム中継のみ（update_settings と同様、
+          // メモリにも保持しない: 切断時は participant_left でクライアント側が
+          // クリアする契約）。
+          if (!roomId) {
+            return;
+          }
+          const room = roomManager.getRoom(roomId);
+          if (!room) {
+            return;
+          }
+          for (const participant of room.participants.values()) {
+            if (participant.participantId === session.participantId) {
+              continue;
+            }
+            participant.send({
+              type: "peer_playback_state",
+              participantId: session.participantId,
+              playing: message.playing,
+            });
+          }
+          return;
+        }
+
         case "start": {
           session.startRecording(message, {
             createSpeechStream: createStream,
