@@ -27,6 +27,7 @@ import {
   primeHtmlAudioPlayback,
   type AudioPlaybackQueue,
 } from "@/lib/audioPlaybackQueue";
+import { createHalfDuplexGate, type HalfDuplexGate } from "./halfDuplex";
 import { initialRoomState, roomReducer, toMessageView, type AppStatus } from "./reducer";
 import styles from "./RoomClient.module.css";
 
@@ -168,16 +169,26 @@ export function RoomClient({
     audioQueueRef.current?.setEnabled(ttsEnabled);
   }, [ttsEnabled]);
 
+  // 半二重ゲート（bd-0ee）: 自デバイスのTTS再生中（＋残響猶予）はマイク音声の
+  // WS送信を抑止し、再生音の再認識による翻訳の無限ループを防ぐ。
+  const halfDuplexRef = useRef<HalfDuplexGate | null>(null);
+
   useEffect(() => {
     // 生成時点では Audio 要素は作られない（enqueue 時に初めてファクトリが
     // 実行される）ため、副作用としては軽量。
-    const queue = createAudioPlaybackQueue();
+    const gate = createHalfDuplexGate();
+    halfDuplexRef.current = gate;
+    const queue = createAudioPlaybackQueue(undefined, (playing) => {
+      gate.onPlaybackStateChange(playing);
+    });
     queue.setEnabled(ttsEnabledRef.current);
     audioQueueRef.current = queue;
 
     return () => {
       queue.dispose();
       audioQueueRef.current = null;
+      gate.dispose();
+      halfDuplexRef.current = null;
     };
   }, []);
 
@@ -193,6 +204,26 @@ export function RoomClient({
     }
     socket.send(JSON.stringify(message));
   }, []);
+
+  /**
+   * Recorder 用の送信ラッパー（bd-0ee 半二重制御）。
+   * 自デバイスのTTS再生中（＋残響猶予）は `audio` チャンクのみ送信を抑止する
+   * （再生音をマイクが拾って翻訳が無限ループするのを防ぐ）。
+   * `start`/`stop`/`commit` 等の制御メッセージは常に通す。
+   *
+   * 注: TTSトグルをOFFにした直後は、再生中の1件が最後まで再生される既存仕様
+   * （audioPlaybackQueue.setEnabled の設計判断）に伴い、その再生が終わるまで
+   * 抑止も継続する（意図した挙動。スピーカーから音が出ている間は拾い得るため）。
+   */
+  const recorderSendMessage = useCallback(
+    (message: ClientMessage) => {
+      if (message.type === "audio" && halfDuplexRef.current?.shouldSuppressAudio()) {
+        return;
+      }
+      sendMessage(message);
+    },
+    [sendMessage],
+  );
 
   /**
    * TTSトグル操作時のハンドラ。ローカル状態（audioQueueの再生可否・次回
@@ -558,7 +589,7 @@ export function RoomClient({
 
       <Recorder
         language={currentLanguage}
-        sendMessage={sendMessage}
+        sendMessage={recorderSendMessage}
         disabled={!isJoinedOrRecording || state.roomEnded}
         forceStop={state.roomEnded}
         enableTts={ttsEnabled}

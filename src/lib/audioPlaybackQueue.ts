@@ -205,14 +205,26 @@ export interface AudioPlaybackQueue {
 /**
  * 音声再生キューを生成する。
  * @param playerFactory base64 mp3 から AudioPlayer を生成するファクトリ（未指定時は HTMLAudioElement 実装）
+ * @param onPlaybackStateChange 再生中かどうかの変化通知（true=再生開始、false=キューが空になり停止。
+ *   bd-0ee: 自デバイスのTTS再生中はマイク音声の送信を抑止する半二重制御に使う）
  */
 export function createAudioPlaybackQueue(
   playerFactory: AudioPlayerFactory = createHtmlAudioPlayer,
+  onPlaybackStateChange?: (playing: boolean) => void,
 ): AudioPlaybackQueue {
   const queue: string[] = [];
   let currentPlayer: AudioPlayer | null = null;
   let enabled = true;
   let disposed = false;
+  let playing = false;
+
+  const setPlaying = (next: boolean): void => {
+    if (playing === next) {
+      return;
+    }
+    playing = next;
+    onPlaybackStateChange?.(next);
+  };
 
   const playNext = (): void => {
     if (disposed) {
@@ -224,11 +236,14 @@ export function createAudioPlaybackQueue(
     }
     const next = queue.shift();
     if (next === undefined) {
+      // キューが空＝アイドル状態へ遷移（advance 経由で到達した場合）。
+      setPlaying(false);
       return;
     }
 
     const player = playerFactory(next);
     currentPlayer = player;
+    setPlaying(true);
 
     const advance = (): void => {
       currentPlayer = null;
@@ -279,6 +294,7 @@ export function createAudioPlaybackQueue(
         currentPlayer.stop();
         currentPlayer = null;
       }
+      setPlaying(false);
     },
   };
 }

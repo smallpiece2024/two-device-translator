@@ -280,6 +280,26 @@ describe("RoomClient", () => {
     expect(queue.enqueue).toHaveBeenCalledWith("QkFTRTY0REFUQQ==");
   });
 
+  it("audioPlaybackQueueに再生状態変化コールバックが結線される（bd-0ee 半二重制御）", () => {
+    render(<RoomClient roomId="room-abc" wsUrl="ws://localhost:3001/ws" />);
+
+    // createAudioPlaybackQueue(playerFactory, onPlaybackStateChange) の
+    // 第2引数に半二重ゲートへの通知関数が渡されていること
+    const lastCall =
+      createAudioPlaybackQueueMock.mock.calls[
+        createAudioPlaybackQueueMock.mock.calls.length - 1
+      ];
+    expect(typeof lastCall[1]).toBe("function");
+
+    // コールバックの呼び出しが例外なく処理されること（ゲートの状態遷移
+    // 自体の検証は tests/unit/halfDuplex.test.ts が担う）
+    const onPlaybackStateChange = lastCall[1] as (playing: boolean) => void;
+    expect(() => {
+      onPlaybackStateChange(true);
+      onPlaybackStateChange(false);
+    }).not.toThrow();
+  });
+
   it("TTSトグル操作でaudioPlaybackQueue.setEnabledが呼ばれる", async () => {
     const user = userEvent.setup({
       advanceTimers: (ms) => {

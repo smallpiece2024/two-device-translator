@@ -191,6 +191,62 @@ describe("audioPlaybackQueue", () => {
     expect(() => queue.dispose()).not.toThrow();
     expect(mock.stopCallCount()).toBe(0);
   });
+
+  describe("再生状態変化通知（onPlaybackStateChange、bd-0ee）", () => {
+    it("再生開始でtrue、キューが空になって停止するとfalseが通知される", () => {
+      const playedOrder: string[] = [];
+      const mock = createMockPlayerFactory(playedOrder);
+      const states: boolean[] = [];
+      const queue = createAudioPlaybackQueue(mock.factory, (playing) => states.push(playing));
+
+      queue.enqueue("audio-1");
+      expect(states).toEqual([true]);
+
+      mock.finish(0);
+      expect(states).toEqual([true, false]);
+    });
+
+    it("連続再生中（キューに次がある間）はfalseが通知されない（true/falseは各1回のみ）", () => {
+      const playedOrder: string[] = [];
+      const mock = createMockPlayerFactory(playedOrder);
+      const states: boolean[] = [];
+      const queue = createAudioPlaybackQueue(mock.factory, (playing) => states.push(playing));
+
+      queue.enqueue("audio-1");
+      queue.enqueue("audio-2");
+      expect(states).toEqual([true]);
+
+      mock.finish(0); // 次のaudio-2再生へ（再生中は継続）
+      expect(states).toEqual([true]);
+
+      mock.finish(1); // キューが空に
+      expect(states).toEqual([true, false]);
+    });
+
+    it("再生中にdispose()するとfalseが通知される", () => {
+      const playedOrder: string[] = [];
+      const mock = createMockPlayerFactory(playedOrder);
+      const states: boolean[] = [];
+      const queue = createAudioPlaybackQueue(mock.factory, (playing) => states.push(playing));
+
+      queue.enqueue("audio-1");
+      queue.dispose();
+
+      expect(states).toEqual([true, false]);
+    });
+
+    it("再生エラーでキューが空になった場合もfalseが通知される", () => {
+      const playedOrder: string[] = [];
+      const mock = createMockPlayerFactory(playedOrder);
+      const states: boolean[] = [];
+      const queue = createAudioPlaybackQueue(mock.factory, (playing) => states.push(playing));
+
+      queue.enqueue("audio-1");
+      mock.fail(0);
+
+      expect(states).toEqual([true, false]);
+    });
+  });
 });
 
 /**
