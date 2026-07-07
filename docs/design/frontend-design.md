@@ -97,6 +97,7 @@ app/(owner)/rooms/[roomId]/page.tsx     (Server Component: 認証・所有者確
 
 - 自分が**聞き手として**翻訳音声を受け取るか（FR-6.1）。ON/OFF を `update_settings`（`enableTts`）で送り、次の相手発話から反映。テキスト表示はトグルに関係なく常時（FR-6.2）。
 - 言語別 TTS（`ttsByLanguage`）はプロトタイプ同様クライアントで保持し、送信時に boolean へ解決してよい（MVP は単純 ON/OFF で可）。
+- **TTSと録音の半二重制約（bd-0ee、本番実機で確定した制約）**: 対面利用ではデバイスが近接するため、自デバイスのTTS再生音を自分のマイクが拾い「再生音→誤認識→翻訳→相手側で再生→…」の無限ループが発生しうる。対策として、**自デバイスでTTS再生中（＋残響猶予 300ms）はマイク音声（`audio` チャンク）のWS送信を抑止する**（録音は継続、`start`/`stop`/`commit` は通す）。実装は `halfDuplex.ts`（純粋モジュール）＋ `audioPlaybackQueue` の再生状態変化通知＋ `RoomClient` の送信ラッパー。
 
 ### QRDisplay（owner のみ）
 
