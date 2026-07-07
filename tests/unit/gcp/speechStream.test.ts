@@ -194,6 +194,71 @@ describe("createSpeechStream() — handle.write() の動作", () => {
     expect(fatal).toBe(false);
     expect(message).not.toContain("stream destroyed");
   });
+
+  describe("終了済みストリームへのwriteガード（bd-c3z）", () => {
+    test("errorイベント後のwriteはストリームへ書き込まれず、onErrorも追加で呼ばれない", () => {
+      const mockStream = createMockRecognizeStream();
+      const mockClient = createMockSpeechClient(mockStream);
+      const onError = jest.fn();
+      const handle = createSpeechStream(makeOptions({ onError }), mockClient);
+
+      mockStream.emit("error", new Error("some stream error"));
+      const onErrorCallsAfterEvent = onError.mock.calls.length;
+
+      handle.write(Buffer.from("a"));
+      handle.write(Buffer.from("b"));
+
+      expect(mockStream.write).not.toHaveBeenCalled();
+      expect(onError.mock.calls.length).toBe(onErrorCallsAfterEvent);
+    });
+
+    test("destroy()後のwriteは破棄され、警告は初回の1回のみ出力される", () => {
+      const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const mockStream = createMockRecognizeStream();
+      const mockClient = createMockSpeechClient(mockStream);
+      const handle = createSpeechStream(makeOptions(), mockClient);
+
+      handle.destroy();
+      handle.write(Buffer.from("a"));
+      handle.write(Buffer.from("b"));
+      handle.write(Buffer.from("c"));
+
+      expect(mockStream.write).not.toHaveBeenCalled();
+      const dropWarnings = warnSpy.mock.calls.filter((call) =>
+        String(call[0]).includes("dropping audio chunks"),
+      );
+      expect(dropWarnings).toHaveLength(1);
+      warnSpy.mockRestore();
+    });
+
+    test("end()後のwriteは破棄される", () => {
+      const mockStream = createMockRecognizeStream();
+      const mockClient = createMockSpeechClient(mockStream);
+      const handle = createSpeechStream(makeOptions(), mockClient);
+
+      handle.end();
+      handle.write(Buffer.from("a"));
+
+      expect(mockStream.write).not.toHaveBeenCalled();
+    });
+
+    test("write例外の発生後、以降のwriteは破棄されonErrorの連鎖が起きない", () => {
+      const mockStream = createMockRecognizeStream();
+      mockStream.write.mockImplementation(() => {
+        throw new Error("write failed");
+      });
+      const mockClient = createMockSpeechClient(mockStream);
+      const onError = jest.fn();
+      const handle = createSpeechStream(makeOptions({ onError }), mockClient);
+
+      handle.write(Buffer.from("a")); // 例外→onError(1回)+terminated
+      handle.write(Buffer.from("b")); // 破棄
+      handle.write(Buffer.from("c")); // 破棄
+
+      expect(mockStream.write).toHaveBeenCalledTimes(1);
+      expect(onError).toHaveBeenCalledTimes(1);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
