@@ -112,6 +112,16 @@ export function createSpeechStream(
 
   const speechClient = client ?? getSpeechClient();
 
+  /**
+   * ストリームが書き込み不能になったか（エラー発生・end()・destroy() 後）。
+   * bd-c3z: 終了済みストリームへの write は Node 側で 'error' イベント
+   * （"Cannot call write after a stream was destroyed"）を発火させ、
+   * チャンクごとにエラーログとクライアント通知が連鎖するため、ガードして
+   * 静かに破棄する（初回のみ警告ログ1行）。
+   */
+  let terminated = false;
+  let droppedAfterTerminationWarned = false;
+
   const speechConfig: {
     encoding: "WEBM_OPUS";
     sampleRateHertz: number;
@@ -163,6 +173,8 @@ export function createSpeechStream(
       }
     })
     .on("error", (err: Error) => {
+      // エラー後のストリームは書き込み不能（bd-c3z: 以降の write は破棄する）。
+      terminated = true;
       const message = err.message ?? String(err);
       console.error("[speechStream] STT stream error:", message);
 
@@ -185,7 +197,12 @@ export function createSpeechStream(
       }
     })
     .on("end", () => {
+      terminated = true;
       console.log("[speechStream] STT stream ended.");
+    })
+    .on("close", () => {
+      // error/end を経ずに close のみ発火するケースの取りこぼし防止（レビュー指摘）。
+      terminated = true;
     });
 
   const handle: SpeechStreamHandle = {
@@ -194,9 +211,22 @@ export function createSpeechStream(
      * 呼び出し元で base64 → Buffer 変換を行い、Buffer を渡すこと。
      */
     write(chunk: Buffer): void {
+      // 終了済み（エラー・end・destroy 後）のストリームへは書き込まない
+      // （bd-c3z: チャンクごとの 'error' イベント連鎖を防ぐ）。クライアントが
+      // 停止前に送り続けた残チャンクは静かに破棄する（初回のみ警告1行）。
+      if (terminated) {
+        if (!droppedAfterTerminationWarned) {
+          droppedAfterTerminationWarned = true;
+          console.warn(
+            "[speechStream] dropping audio chunks written after stream termination (further drops are silent)",
+          );
+        }
+        return;
+      }
       try {
         recognizeStream.write(chunk);
       } catch (err) {
+        terminated = true;
         const message = err instanceof Error ? err.message : String(err);
         console.error("[speechStream] Error writing to STT stream:", message);
         onError("Failed to send audio to speech recognition.", false);
@@ -207,6 +237,7 @@ export function createSpeechStream(
      * STT ストリームへの書き込みを正常終了する（stop メッセージ受信時に呼ぶ）。
      */
     end(): void {
+      terminated = true;
       try {
         recognizeStream.end();
       } catch (err) {
@@ -219,6 +250,7 @@ export function createSpeechStream(
      * STT ストリームを強制破棄する（接続 close・再 start 時のクリーンアップ用）。
      */
     destroy(): void {
+      terminated = true;
       try {
         recognizeStream.destroy();
       } catch (err) {
