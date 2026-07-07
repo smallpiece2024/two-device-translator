@@ -13,6 +13,7 @@
  */
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import {
+  WS_CLOSE_CODE_SUPERSEDED,
   serverMessageSchema,
   type ClientMessage,
   type RoomEndedReason,
@@ -426,7 +427,7 @@ export function RoomClient({
         }
       });
 
-      socket.addEventListener("close", () => {
+      socket.addEventListener("close", (event) => {
         if (!isCurrent()) return;
 
         if (fatal) {
@@ -438,6 +439,23 @@ export function RoomClient({
         if (roomEndedRef.current) {
           // room_ended（終端状態）に伴う close。終了バナーは既に room_ended
           // ハンドラで dispatch 済みのため、ここでは再接続もエラー表示もしない。
+          return;
+        }
+
+        if (event.code === WS_CLOSE_CODE_SUPERSEDED) {
+          // 同一参加者の新しい接続に置き換えられた（別ウィンドウ/タブで
+          // このルームを開いた等）。ここで再接続すると相手側を蹴り返して
+          // 互いに切断し合う無限ループになる（bd-8x0 で本番発生）ため、
+          // 再接続せず終端表示にする。
+          // 注: アンマウント時のクリーンアップによる自身の close はコード
+          // 省略（1005 等）だが、そもそも冒頭の isCurrent() ガード
+          // （cancelled フラグ）で弾かれるためこの分岐には到達しない。
+          dispatch({
+            type: "ERROR",
+            message:
+              "別のウィンドウでこのルームが開かれたため、この画面の接続を終了しました。こちらを使う場合はページを再読み込みしてください。",
+            fatal: true,
+          });
           return;
         }
 
