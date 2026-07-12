@@ -154,7 +154,14 @@ function collectMessages(ws: WebSocket, count: number, timeoutMs = 2500): Promis
 
     const onMessage = (data: WebSocket.RawData) => {
       try {
-        received.push(JSON.parse(data.toString("utf8")) as RawMessage);
+        const message = JSON.parse(data.toString("utf8")) as RawMessage;
+        // active_speaker（話者調停、bd-6h1）は発話活動に伴い非同期に割り込む
+        // ため、このテストの関心事（参加者イベント・TTSトグル）から除外する
+        // （調停自体の検証は tests/integration/speaker-arbitration.test.ts）。
+        if (message.type === "active_speaker") {
+          return;
+        }
+        received.push(message);
         if (received.length >= count) {
           clearTimeout(timer);
           ws.off("message", onMessage);
@@ -175,7 +182,13 @@ function collectMessagesForGracePeriod(ws: WebSocket, graceMs = 400): Promise<Ra
   return new Promise((resolve) => {
     const received: RawMessage[] = [];
     const onMessage = (data: WebSocket.RawData) => {
-      received.push(JSON.parse(data.toString("utf8")) as RawMessage);
+      const message = JSON.parse(data.toString("utf8")) as RawMessage;
+      // collectMessages と同様、話者調停の active_speaker はこのテストの
+      // 関心事ではないため除外する。
+      if (message.type === "active_speaker") {
+        return;
+      }
+      received.push(message);
     };
     ws.on("message", onMessage);
     setTimeout(() => {

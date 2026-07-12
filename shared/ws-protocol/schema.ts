@@ -97,6 +97,18 @@ export const playbackStateSchema = z.object({
   playing: z.boolean(),
 });
 
+/**
+ * マイク入力レベルの通知（話者交代制、bd-6h1）。
+ * 録音中のクライアントが約200ms間隔で送る（ゲイン適用前のRMS、0..1）。
+ * サーバーの話者調停（生声クロストーク対策）が「どの端末に大きな音が
+ * 入っているか」の判定材料に使う。永続化しない
+ * （docs/design/websocket-protocol.md「audio_level（入力レベル通知）」参照）。
+ */
+export const audioLevelSchema = z.object({
+  type: z.literal("audio_level"),
+  level: z.number().min(0).max(1),
+});
+
 export const clientMessageSchema = z.discriminatedUnion("type", [
   joinSchema,
   updateSettingsSchema,
@@ -106,6 +118,7 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
   stopSchema,
   requestEndSchema,
   playbackStateSchema,
+  audioLevelSchema,
 ]);
 
 // ─────────────────────────────────────────────
@@ -236,6 +249,19 @@ export const peerPlaybackStateSchema = z.object({
   playing: z.boolean(),
 });
 
+/**
+ * 現在の話者の通知（話者交代制、bd-6h1）。
+ * サーバーの話者調停が話者を確定/解放した際に、同室の**全**参加者
+ * （話者本人を含む）へ配信する。`participantId: null` は「話者なし」。
+ * 受信側は「話者が自分以外」の間、自分のマイクをミュートする
+ * （生声クロストーク対策。docs/design/websocket-protocol.md
+ * 「active_speaker（話者通知）」参照）。
+ */
+export const activeSpeakerSchema = z.object({
+  type: z.literal("active_speaker"),
+  participantId: z.string().min(1).nullable(),
+});
+
 /** エラー通知。`fatal:true` の場合は接続終了 */
 export const errorSchema = z.object({
   type: z.literal("error"),
@@ -266,6 +292,7 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
   participantLeftSchema,
   participantUpdatedSchema,
   peerPlaybackStateSchema,
+  activeSpeakerSchema,
   errorSchema,
   roomEndedSchema,
 ]);

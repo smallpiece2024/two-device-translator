@@ -117,6 +117,29 @@ describe("ws-protocol schema", () => {
     it("playback_state: playing 欠落を拒否する（bd-rwi）", () => {
       expect(() => clientMessageSchema.parse({ type: "playback_state" })).toThrow();
     });
+
+    it("audio_level メッセージをparseできる（bd-6h1）", () => {
+      const input = { type: "audio_level", level: 0.42 };
+      expect(clientMessageSchema.parse(input)).toEqual(input);
+    });
+
+    it("audio_level: 境界値 0 / 1 を受理する（bd-6h1）", () => {
+      expect(clientMessageSchema.parse({ type: "audio_level", level: 0 })).toEqual({
+        type: "audio_level",
+        level: 0,
+      });
+      expect(clientMessageSchema.parse({ type: "audio_level", level: 1 })).toEqual({
+        type: "audio_level",
+        level: 1,
+      });
+    });
+
+    it("audio_level: 範囲外（負数・1超）・型不正・欠落を拒否する（bd-6h1）", () => {
+      expect(() => clientMessageSchema.parse({ type: "audio_level", level: -0.1 })).toThrow();
+      expect(() => clientMessageSchema.parse({ type: "audio_level", level: 1.1 })).toThrow();
+      expect(() => clientMessageSchema.parse({ type: "audio_level", level: "0.5" })).toThrow();
+      expect(() => clientMessageSchema.parse({ type: "audio_level" })).toThrow();
+    });
   });
 
   describe("startSchema: detectLanguage デフォルト値", () => {
@@ -417,6 +440,21 @@ describe("ws-protocol schema", () => {
         playing: true,
       };
       expect(serverMessageSchema.parse(input)).toEqual(input);
+    });
+
+    it("active_speaker メッセージをparseできる（participantId / null の両方、bd-6h1）", () => {
+      const withId = { type: "active_speaker", participantId: "p1" };
+      expect(serverMessageSchema.parse(withId)).toEqual(withId);
+
+      const released = { type: "active_speaker", participantId: null };
+      expect(serverMessageSchema.parse(released)).toEqual(released);
+    });
+
+    it("active_speaker: 空文字participantId・欠落を拒否する（bd-6h1）", () => {
+      expect(() =>
+        serverMessageSchema.parse({ type: "active_speaker", participantId: "" }),
+      ).toThrow();
+      expect(() => serverMessageSchema.parse({ type: "active_speaker" })).toThrow();
     });
 
     it("transcript_final メッセージ（仕様書例）をparseできる", () => {

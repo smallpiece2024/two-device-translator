@@ -128,7 +128,14 @@ function collectMessages(ws: WebSocket, count: number): Promise<ServerMessage[]>
     const received: ServerMessage[] = [];
     const onMessage = (data: WebSocket.RawData) => {
       try {
-        received.push(JSON.parse(data.toString("utf8")) as ServerMessage);
+        const message = JSON.parse(data.toString("utf8")) as ServerMessage;
+        // active_speaker（話者調停、bd-6h1）は発話活動に伴い非同期に割り込む
+        // ため、このテストの関心事（GCP実装の差し替え解決）から除外する
+        // （調停自体の検証は tests/integration/speaker-arbitration.test.ts）。
+        if (message.type === "active_speaker") {
+          return;
+        }
+        received.push(message);
         if (received.length >= count) {
           ws.off("message", onMessage);
           resolve(received);

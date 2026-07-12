@@ -570,3 +570,155 @@ describe("Session — startRecording（detectLanguage: 言語検出モードの�
     expect(onLanguageDetected).toHaveBeenLastCalledWith("ja-JP");
   });
 });
+
+describe("Session — onSpeechActivity（話者調停ゲート、bd-6h1）", () => {
+  test("onSpeechActivityがfalseを返すと、interimはtranscript_interimとして送信されない", () => {
+    const { session, ws } = makeSession();
+    const { factory, instances } = createFakeSpeechStreamFactory();
+
+    session.startRecording(makeStartMessage(), {
+      onUtteranceCommitted: jest.fn(),
+      createSpeechStream: factory,
+      onSpeechActivity: () => false,
+    });
+
+    instances[0].onInterim("相手の声を拾った誤認識");
+
+    const sent = (ws.send as jest.Mock).mock.calls.map(
+      (call) => JSON.parse(call[0] as string) as { type: string },
+    );
+    expect(sent.filter((m) => m.type === "transcript_interim")).toHaveLength(0);
+  });
+
+  test("onSpeechActivityがfalseを返すと、finalは破棄される（transcript_final送信なし・バッファ追加なし）", () => {
+    const { session, ws } = makeSession();
+    const { factory, instances } = createFakeSpeechStreamFactory();
+    const onUtteranceCommitted = jest.fn();
+
+    session.startRecording(makeStartMessage(), {
+      onUtteranceCommitted,
+      createSpeechStream: factory,
+      onSpeechActivity: () => false,
+    });
+
+    instances[0].onFinal("相手の声を拾った誤認識");
+    // バッファに積まれていなければ、commit しても確定は発火しない
+    session.commitUtterance();
+
+    const sent = (ws.send as jest.Mock).mock.calls.map(
+      (call) => JSON.parse(call[0] as string) as { type: string },
+    );
+    expect(sent.filter((m) => m.type === "transcript_final")).toHaveLength(0);
+    expect(sent.filter((m) => m.type === "utterance_committed")).toHaveLength(0);
+    expect(onUtteranceCommitted).not.toHaveBeenCalled();
+  });
+
+  test("onSpeechActivityがfalseを返すと、言語検出（detectLanguage）にもfinalが使われない", () => {
+    const { session } = makeSession({ language: "ja-JP" });
+    const { factory, instances } = createFakeSpeechStreamFactory();
+    const onLanguageDetected = jest.fn();
+
+    session.startRecording(
+      makeStartMessage({ sourceLanguage: "ja-JP", detectLanguage: true }),
+      {
+        onUtteranceCommitted: jest.fn(),
+        createSpeechStream: factory,
+        onLanguageDetected,
+        onSpeechActivity: () => false,
+      },
+    );
+
+    instances[0].onFinal("Hello", "en-US");
+
+    expect(session.language).toBe("ja-JP");
+    expect(onLanguageDetected).not.toHaveBeenCalled();
+  });
+
+  test("onSpeechActivityがtrueを返す間は、interim/finalとも従来どおり処理される", () => {
+    const { session, ws } = makeSession();
+    const { factory, instances } = createFakeSpeechStreamFactory();
+    const onSpeechActivity = jest.fn(() => true);
+
+    session.startRecording(makeStartMessage(), {
+      onUtteranceCommitted: jest.fn(),
+      createSpeechStream: factory,
+      onSpeechActivity,
+    });
+
+    instances[0].onInterim("こんにち");
+    instances[0].onFinal("こんにちは");
+
+    const sent = (ws.send as jest.Mock).mock.calls.map(
+      (call) => JSON.parse(call[0] as string) as { type: string },
+    );
+    expect(sent.filter((m) => m.type === "transcript_interim")).toHaveLength(1);
+    expect(sent.filter((m) => m.type === "transcript_final")).toHaveLength(1);
+    expect(onSpeechActivity).toHaveBeenCalledTimes(2);
+  });
+
+  test("空文字interimは発話活動として扱われず（ゲート不問合せ）、従来どおり送信される", () => {
+    const { session, ws } = makeSession();
+    const { factory, instances } = createFakeSpeechStreamFactory();
+    const onSpeechActivity = jest.fn(() => false);
+
+    session.startRecording(makeStartMessage(), {
+      onUtteranceCommitted: jest.fn(),
+      createSpeechStream: factory,
+      onSpeechActivity,
+    });
+
+    instances[0].onInterim("");
+    instances[0].onInterim("   ");
+
+    expect(onSpeechActivity).not.toHaveBeenCalled();
+    const sent = (ws.send as jest.Mock).mock.calls.map(
+      (call) => JSON.parse(call[0] as string) as { type: string },
+    );
+    // 空interimの送信は従来挙動を維持する（表示上は無害）
+    expect(sent.filter((m) => m.type === "transcript_interim")).toHaveLength(2);
+  });
+
+  test("空文字finalは発話活動として扱われず（ゲート不問合せ）、言語検出には従来どおり使われる", () => {
+    const { session } = makeSession({ language: "ja-JP" });
+    const { factory, instances } = createFakeSpeechStreamFactory();
+    const onSpeechActivity = jest.fn(() => false);
+    const onLanguageDetected = jest.fn();
+
+    session.startRecording(
+      makeStartMessage({ sourceLanguage: "ja-JP", detectLanguage: true }),
+      {
+        onUtteranceCommitted: jest.fn(),
+        createSpeechStream: factory,
+        onLanguageDetected,
+        onSpeechActivity,
+      },
+    );
+
+    instances[0].onFinal("", "en-US");
+
+    // ゲートには問い合わせない（空finalで話者を確保・延長しない）
+    expect(onSpeechActivity).not.toHaveBeenCalled();
+    // 言語検出への使用は従来挙動を維持する（bd-6h1以前からの動作）
+    expect(session.language).toBe("en-US");
+    expect(onLanguageDetected).toHaveBeenCalledWith("en-US");
+  });
+
+  test("onSpeechActivity未指定（調停なし）の場合、従来どおりすべて処理される", () => {
+    const { session, ws } = makeSession();
+    const { factory, instances } = createFakeSpeechStreamFactory();
+
+    session.startRecording(makeStartMessage(), {
+      onUtteranceCommitted: jest.fn(),
+      createSpeechStream: factory,
+    });
+
+    instances[0].onInterim("こんにち");
+    instances[0].onFinal("こんにちは");
+
+    const sent = (ws.send as jest.Mock).mock.calls.map(
+      (call) => JSON.parse(call[0] as string) as { type: string },
+    );
+    expect(sent.filter((m) => m.type === "transcript_interim")).toHaveLength(1);
+    expect(sent.filter((m) => m.type === "transcript_final")).toHaveLength(1);
+  });
+});

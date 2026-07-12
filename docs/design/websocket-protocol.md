@@ -160,6 +160,14 @@ MediaRecorder の Blob を base64 化（WebM/Opus 48kHz）。STTストリーム�
 
 対面利用では相手端末のスピーカー音を自分のマイクが拾い、「翻訳音声→発話として誤認識→翻訳→再生→…」の音響フィードバックループが発生しうる（本番実機で確認）。受信側は相手の再生中＋残響猶予の間、自分の**マイクトラックを一時ミュート**する（**相互半二重**。`audio` チャンクの送信自体は無音のまま継続する — 送信を止めるとSTTが Audio Timeout するため。bd-dnh。[frontend-design.md「TTSと録音の半二重制約」](./frontend-design.md#ttstoggle) 参照）。
 
+### `audio_level`（入力レベル通知、bd-6h1）
+
+```json
+{ "type": "audio_level", "level": 0.42 }
+```
+
+録音中のクライアントが約200ms間隔で送る、マイク入力レベル（**ゲイン適用前**のRMS、0〜1）。サーバーの**話者調停**（[server-design.md「話者調停（話者交代制）」](./server-design.md#話者調停話者交代制bd-6h1) 参照）が「どの端末に大きな音が入っているか」の主判定材料に使う。永続化せずメモリのみ（参加者ごとに直近値＋受信時刻を保持、鮮度1秒）。WebAudio が使えないクライアントは送らなくてよい（サーバーは到着順のみで判定するフォールバックで動作する）。
+
 ---
 
 ## server → client メッセージ
@@ -201,6 +209,15 @@ MediaRecorder の Blob を base64 化（WebM/Opus 48kHz）。STTストリーム�
 
 client → server の `playback_state` を、同室の**他**参加者へ中継したもの（送信者本人には配信しない）。受信側は `playing:true` の間＋残響猶予（300ms）、自分の**マイクトラックを一時ミュート**する（相互半二重、音響フィードバックループ対策。`audio` の送信自体は無音のまま継続する）。切断・再接続で `playing:false` を受け損ねる場合に備え、受信側は `participant_left` / `participant_joined` で該当参加者の記録を、自分の再接続（`joined`）で全記録をクリアする。
 
+### `active_speaker`（話者通知、bd-6h1）
+
+```json
+{ "type": "active_speaker", "participantId": "p_123" }
+{ "type": "active_speaker", "participantId": null }
+```
+
+サーバーの話者調停（話者交代制＝生声クロストーク対策）が話者を確定/解放した際に、同室の**全参加者（話者本人を含む）**へ配信する。`participantId: null` は「話者なし」。受信側は「話者が自分以外」の間、自分のマイクを一時ミュートする（TTS半二重ミュートとのOR。結線は bd-9mo）。切断・再接続で解放通知を受け損ねる場合に備え、受信側は自分の再接続（`joined`）でリセットし、`participant_left` で退室者が話者ならリセットする（サーバー側も切断時に解放・配信するため二重の防御）。
+
 ### `transcript_interim` / `transcript_final` / `utterance_committed`（話者本人にのみ）
 
 ```json
@@ -210,6 +227,8 @@ client → server の `playback_state` を、同室の**他**参加者へ中継�
 ```
 
 interim は**表示専用・翻訳/TTS対象外**（FR-7.5）。これらは発話者デバイスにのみ返す（自分の原文フィードバック用）。`reason` は `"silence" | "maxChars" | "maxSeconds" | "commit" | "stop"`。
+
+> **話者調停による破棄（bd-6h1）**: 話者調停が拒否した STT 結果（他参加者が話者の間に届いたもの、または音量差で「相手の声を拾った」と判定されたもの）は、`transcript_interim` / `transcript_final` とも配信されず、発話バッファ・言語検出にも使われない（サーバー側で破棄）。
 
 ### `message`（確定発話・全参加者へ配信）
 
