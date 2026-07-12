@@ -23,6 +23,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ClientMessage, SupportedLanguage } from "@shared/index";
 import { blobToBase64, getSupportedMimeType } from "./audioEncoding";
+import { createAudioPipeline, type AudioPipeline } from "./audioPipeline";
 import styles from "./Recorder.module.css";
 
 /** 発話区切りしきい値の既定値（docs/design/websocket-protocol.md `start`節） */
@@ -30,6 +31,9 @@ export const DEFAULT_CHUNK_MS = 250;
 export const DEFAULT_SILENCE_MS = 1000;
 export const DEFAULT_MAX_CHARS = 80;
 export const DEFAULT_MAX_SECONDS = 10;
+
+/** 入力レベル（`onAudioLevel`）の通知間隔（ms）。話者交代制の判定材料（bd-1or） */
+export const AUDIO_LEVEL_INTERVAL_MS = 200;
 
 /** 録音操作の内部状態 */
 export type RecorderStatus = "idle" | "starting" | "recording" | "error";
@@ -75,13 +79,24 @@ export interface RecorderProps {
    */
   onStatusChange?: (status: RecorderStatus) => void;
   /**
-   * true の間、マイクトラックを一時ミュートする（`MediaStreamTrack.enabled=false`。
-   * 半二重制御 bd-dnh: TTS再生中の音響フィードバック防止）。
-   * 録音・チャンク送信自体は継続する（無音が送られる）ため、サーバー側の
-   * STTストリームは途切れない（送信を止める方式は Audio Timeout を招くため不採用）。
+   * true の間、マイク入力を一時ミュートする（半二重制御: TTS再生中や
+   * 他者の発話中の音響フィードバック/クロストーク防止）。
+   * bd-1or で GainNode のゲイン0方式に変更（WebAudio 不可時は従来の
+   * `track.enabled=false` にフォールバック）。ゲイン0ならエンコーダが無音の
+   * 実データを出し続けるため、録音・チャンク送信が継続しサーバー側の
+   * STTストリームが途切れない（トラック無効化はモバイルでサイズ0チャンクとなり
+   * Audio Timeout を招いた。送信を止める方式も同様の理由で不採用）。
    * 既定 false。
    */
   muted?: boolean;
+  /**
+   * 録音中、マイクの入力レベル（ゲイン適用前の RMS、0..1）を約
+   * {@link AUDIO_LEVEL_INTERVAL_MS} 間隔で通知するコールバック（bd-1or）。
+   * 話者交代制（生声クロストーク対策）の判定材料として、呼び出し側
+   * （RoomClient）が `audio_level` メッセージとしてサーバーへ送る。
+   * WebAudio が使えない環境では通知されない。
+   */
+  onAudioLevel?: (level: number) => void;
 }
 
 /**
@@ -103,12 +118,17 @@ export function Recorder({
   forceStop = false,
   onStatusChange,
   muted = false,
+  onAudioLevel,
 }: RecorderProps) {
   const [status, setStatus] = useState<RecorderStatus>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  /** WebAudio パイプライン（ゲイン方式ミュート・レベル測定。bd-1or） */
+  const pipelineRef = useRef<AudioPipeline | null>(null);
+  /** 入力レベルの定期通知タイマー（録音中のみ稼働） */
+  const levelIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isUnmountedRef = useRef(false);
   /**
    * 開始処理の多重実行防止用フラグ。
@@ -129,15 +149,18 @@ export function Recorder({
     onStatusChangeRef.current = onStatusChange;
   }, [onStatusChange]);
 
-  // 半二重ミュート（bd-dnh）: muted の変化をマイクトラックへ反映する。
+  const onAudioLevelRef = useRef(onAudioLevel);
+  useEffect(() => {
+    onAudioLevelRef.current = onAudioLevel;
+  }, [onAudioLevel]);
+
+  // 半二重ミュート: muted の変化をパイプラインへ反映する（bd-1or でゲイン方式へ変更）。
   // getUserMedia 完了前に muted が変わるケースに備え、ref にも保持して
-  // ストリーム取得直後（handleStart 内）にも現在値を適用する。
+  // パイプライン構築直後（handleStart 内）にも現在値を適用する。
   const mutedRef = useRef(muted);
   useEffect(() => {
     mutedRef.current = muted;
-    streamRef.current?.getAudioTracks().forEach((track) => {
-      track.enabled = !muted;
-    });
+    pipelineRef.current?.setMuted(muted);
   }, [muted]);
 
   useEffect(() => {
@@ -153,13 +176,21 @@ export function Recorder({
     // マウント/アンマウント時のみ実行する（stopInternal は関数宣言のため参照は安定）
   }, []);
 
-  /** MediaRecorder の停止とマイクトラックの解放を行う（内部専用） */
+  /** MediaRecorder の停止とマイクトラック・WebAudio資源の解放を行う（内部専用） */
   function stopInternal() {
+    if (levelIntervalRef.current !== null) {
+      clearInterval(levelIntervalRef.current);
+      levelIntervalRef.current = null;
+    }
+
     const recorder = mediaRecorderRef.current;
     if (recorder && (recorder.state === "recording" || recorder.state === "paused")) {
       recorder.stop();
     }
     mediaRecorderRef.current = null;
+
+    pipelineRef.current?.dispose();
+    pipelineRef.current = null;
 
     const stream = streamRef.current;
     if (stream) {
@@ -201,15 +232,35 @@ export function Recorder({
 
     streamRef.current = stream;
 
-    // 取得直後に現在のミュート状態を適用する（TTS再生中に録音を開始した場合、
-    // 最初から無音トラックで開始する。bd-dnh）。
-    stream.getAudioTracks().forEach((track) => {
-      track.enabled = !mutedRef.current;
-    });
+    // WebAudio パイプラインを構築し（ユーザージェスチャ起点のためここで生成）、
+    // 現在のミュート状態を適用する（TTS再生中に録音を開始した場合、
+    // 最初から無音で開始する。bd-1or でゲイン方式へ変更）。
+    const pipeline = createAudioPipeline(stream);
+    pipelineRef.current = pipeline;
+    pipeline.setMuted(mutedRef.current);
 
     const supportedMimeType = getSupportedMimeType();
     const options: MediaRecorderOptions = supportedMimeType ? { mimeType: supportedMimeType } : {};
-    const recorder = new MediaRecorder(stream, options);
+
+    // MediaRecorder の構築失敗時は取得済み資源（AudioContext・マイクトラック）を
+    // 解放してエラー状態にする（コードレビュー should-fix: 従来から try/catch が
+    // なかったが、bd-1or で AudioContext がリーク対象に加わったため防御する）。
+    let recorder: MediaRecorder;
+    try {
+      recorder = new MediaRecorder(pipeline.recordingStream, options);
+    } catch (err) {
+      pipeline.dispose();
+      pipelineRef.current = null;
+      stream.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+      setErrorMessage(
+        err instanceof Error
+          ? `録音の初期化に失敗しました: ${err.message}`
+          : "録音の初期化に失敗しました",
+      );
+      setStatus("error");
+      return;
+    }
 
     recorder.ondataavailable = (event: BlobEvent) => {
       const blob = event.data;
@@ -227,6 +278,15 @@ export function Recorder({
 
     mediaRecorderRef.current = recorder;
     recorder.start(chunkMs);
+
+    // 入力レベルの定期通知（話者交代制の判定材料。WebAudio 不可時は
+    // getLevel() が null を返すため通知しない）。stopInternal で解除する。
+    levelIntervalRef.current = setInterval(() => {
+      const level = pipelineRef.current?.getLevel();
+      if (level !== null && level !== undefined) {
+        onAudioLevelRef.current?.(level);
+      }
+    }, AUDIO_LEVEL_INTERVAL_MS);
 
     sendMessageRef.current({
       type: "start",
