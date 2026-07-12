@@ -71,6 +71,15 @@ export interface StartRecordingHooks {
    * 通常モード（`config.detectLanguage=false`）では呼ばれない。
    */
   onLanguageDetected?: (language: SupportedLanguage) => void;
+  /**
+   * STT結果（interim/final）到着時の話者調停フック（話者交代制、bd-6h1）。
+   * false を返した場合、その結果は**破棄**する（クライアントへの
+   * transcript_interim/final 送信・発話バッファへの追加・言語検出のいずれにも
+   * 使わない）。対面利用で相手の生声を拾った誤認識を配信しないための仕組み。
+   * 省略時はすべて採用（調停なし）。
+   * @see server/room/speakerArbitration.ts
+   */
+  onSpeechActivity?: () => boolean;
 }
 
 /**
@@ -222,10 +231,30 @@ export class Session {
         ? alternativeSttCodes(config.sourceLanguage, resolveSttCode)
         : undefined,
       onInterim: (text) => {
+        // 話者調停（bd-6h1）: 空でない interim のみ発話活動として扱い
+        // （空 interim で話者を確保・延長しない）、破棄対象なら送信しない
+        // （他参加者が話者の間＝相手の声を拾った誤認識の可能性が高い）。
+        if (
+          text.trim().length > 0 &&
+          hooks.onSpeechActivity &&
+          !hooks.onSpeechActivity()
+        ) {
+          return;
+        }
         this.send({ type: "transcript_interim", text });
         this.utteranceBuffer?.notifyInterim();
       },
       onFinal: (text, sttLanguageCode) => {
+        const isEmpty = text.trim().length === 0;
+
+        // 話者調停（bd-6h1）: 空でない final のみ発話活動として扱う
+        // （空 final で話者を確保・延長しない）。破棄対象の final は言語検出にも
+        // 使わない（相手の声を拾った誤認識で言語を確定させないため、検出より
+        // 先に判定する）。
+        if (!isEmpty && hooks.onSpeechActivity && !hooks.onSpeechActivity()) {
+          return;
+        }
+
         // 言語検出モード: 最初の final でのみ判定・確定する（以後固定）。
         // 検出失敗（未対応言語・値なし）時は fail-safe で現在言語を維持する。
         if (this.languageDetector) {
@@ -238,7 +267,7 @@ export class Session {
 
         // 空文字（またはtrim後空）の final はバッファに積む意味がなく、
         // クライアントへ送信しても表示上意味を持たないためスキップする。
-        if (text.trim().length === 0) {
+        if (isEmpty) {
           return;
         }
         this.utteranceBuffer?.addFinal(text);

@@ -13,6 +13,7 @@ import {
   DEFAULT_ENDED_ROOM_TTL_MS,
 } from "./room/roomManager";
 import type { Session, CreateSpeechStreamFn } from "./room/session";
+import { SpeakerArbitrator } from "./room/speakerArbitration";
 import {
   verifyJoin as defaultVerifyJoin,
   isInsecureAuthMode,
@@ -219,11 +220,48 @@ export function startServer(
   options: StartServerOptions = {},
 ): WebSocketServer {
   const wss = new WebSocketServer({ port, host });
+
+  // 話者調停器（話者交代制、bd-6h1）: ルームIDごとに1つ。録音セッションの
+  // STT結果到着を契機に「一度に話者は1人」を調停し、確定/解放を
+  // `active_speaker` として全参加者へ配信する。ルーム終了時に破棄する。
+  const arbitrators = new Map<string, SpeakerArbitrator>();
+
+  const getArbitrator = (roomId: string): SpeakerArbitrator => {
+    const existing = arbitrators.get(roomId);
+    if (existing) {
+      return existing;
+    }
+    const arbitrator = new SpeakerArbitrator({
+      onActiveSpeakerChange: (participantId) => {
+        const room = roomManager.getRoom(roomId);
+        if (!room) {
+          return;
+        }
+        for (const participant of room.participants.values()) {
+          participant.send({ type: "active_speaker", participantId });
+        }
+      },
+    });
+    arbitrators.set(roomId, arbitrator);
+    return arbitrator;
+  };
+
+  const disposeArbitrator = (roomId: string): void => {
+    const arbitrator = arbitrators.get(roomId);
+    if (arbitrator) {
+      arbitrator.dispose();
+      arbitrators.delete(roomId);
+    }
+  };
+
   const roomManager = new RoomManager({
     maxParticipants: options.maxParticipants,
     autoEndThresholdMs: resolveAutoEndThresholdMs(options.autoEndThresholdMs),
     endedRoomTtlMs: resolveEndedRoomTtlMs(options.endedRoomTtlMs),
-    onAutoEnd: (room) => finalizeRoomEnd(room, "auto_timeout"),
+    onAutoEnd: (room) => {
+      finalizeRoomEnd(room, "auto_timeout");
+      disposeArbitrator(room.roomId);
+    },
   });
   const verifyJoin = options.verifyJoin ?? defaultVerifyJoin;
   const mockMode = isMockGcpMode();
@@ -523,10 +561,27 @@ export function startServer(
         case "start": {
           session.startRecording(message, {
             createSpeechStream: createStream,
+            onSpeechActivity: () => {
+              // 話者調停（bd-6h1）: STT結果の採否を判定する。
+              // ルーム喪失・終了後は調停せず採用（従来動作の維持。終了済み
+              // roomId で getArbitrator すると破棄済み調停器が再生成されて
+              // Map に残留するため、active なルームがある場合のみ調停する。
+              // コードレビュー should-fix1）。
+              if (!roomId || !session) {
+                return true;
+              }
+              const room = roomManager.getRoom(roomId);
+              if (!room || room.status !== "active") {
+                return true;
+              }
+              return getArbitrator(roomId).onSpeechActivity(session.participantId);
+            },
             onUtteranceCommitted: (utteranceText) => {
               if (!roomId || !session) {
                 return;
               }
+              // 発話区切りの確定で話者を解放する（次の発話で再調停する）
+              getArbitrator(roomId).onUtteranceCommitted(session.participantId);
               const room = roomManager.getRoom(roomId);
               if (!room) {
                 return;
@@ -571,6 +626,30 @@ export function startServer(
             return;
           }
           session.stopRecording();
+          // 録音終了: 当人が話者なら解放する（stopRecording 内の残バッファ確定で
+          // onUtteranceCommitted 経由の解放が先に走ることもあるが、二重解放は無害）
+          if (roomId) {
+            arbitrators.get(roomId)?.onStop(session.participantId);
+          }
+          return;
+        }
+
+        case "audio_level": {
+          // 話者調停（bd-6h1）: 参加者の直近マイク入力レベルを記録する。
+          // 永続化せずメモリのみ（playback_state と同方針）。
+          // - 録音中のみ受け付ける（未録音の参加者のレベルが調停の比較対象に
+          //   混入して話者を誤って拒否しないよう、サーバー側でも前提を強制する。
+          //   コードレビュー should-fix2）
+          // - active なルームがある場合のみ調停器に触る（終了直後の残メッセージで
+          //   破棄済み調停器が再生成・残留しないようにする。should-fix1）
+          if (!roomId || !session.isRecording) {
+            return;
+          }
+          const room = roomManager.getRoom(roomId);
+          if (!room || room.status !== "active") {
+            return;
+          }
+          getArbitrator(roomId).onLevel(session.participantId, message.level);
           return;
         }
 
@@ -586,6 +665,7 @@ export function startServer(
           const ended = roomManager.endRoom(roomId, "owner_ended");
           if (ended) {
             finalizeRoomEnd(ended, "owner_ended");
+            disposeArbitrator(roomId);
           }
           return;
         }
@@ -620,6 +700,8 @@ export function startServer(
       if (roomId) {
         const room = roomManager.getRoom(roomId);
         const leftParticipantId = session.participantId;
+        // 話者調停: 切断者が話者ならこの時点で解放する（レベル記録も破棄）
+        arbitrators.get(roomId)?.onLeave(leftParticipantId);
         // ルームが既に終了済み（request_end/自動終了で room_ended 配信済み）の
         // 場合は、finalizeRoomEnd 側で全参加者へ通知済みのため participant_left
         // を重ねて送らない（wasEnded は leave() 呼び出し前の状態で判定する。

@@ -13,7 +13,9 @@ import type {
   stopSchema,
   requestEndSchema,
   playbackStateSchema,
+  audioLevelSchema,
   peerPlaybackStateSchema,
+  activeSpeakerSchema,
   clientMessageSchema,
   participantSummarySchema,
   joinedSchema,
@@ -44,6 +46,8 @@ export type StopMessage = z.infer<typeof stopSchema>;
 export type RequestEndMessage = z.infer<typeof requestEndSchema>;
 /** 自デバイスのTTS再生状態通知（相互半二重化、bd-rwi） */
 export type PlaybackStateMessage = z.infer<typeof playbackStateSchema>;
+/** マイク入力レベル通知（話者交代制、bd-6h1） */
+export type AudioLevelMessage = z.infer<typeof audioLevelSchema>;
 export type ClientMessage = z.infer<typeof clientMessageSchema>;
 
 // server → client
@@ -66,6 +70,8 @@ export type ParticipantLeftMessage = z.infer<typeof participantLeftSchema>;
 export type ParticipantUpdatedMessage = z.infer<typeof participantUpdatedSchema>;
 /** 他参加者のTTS再生状態の中継（相互半二重化、bd-rwi） */
 export type PeerPlaybackStateMessage = z.infer<typeof peerPlaybackStateSchema>;
+/** 現在の話者の通知（話者交代制、bd-6h1）。`participantId: null` は話者なし */
+export type ActiveSpeakerMessage = z.infer<typeof activeSpeakerSchema>;
 export type ErrorMessage = z.infer<typeof errorSchema>;
 /** ルーム終了理由（bd-e3p）。`"owner_ended"` | `"auto_timeout"` */
 export type RoomEndedReason = z.infer<typeof roomEndedReasonSchema>;
