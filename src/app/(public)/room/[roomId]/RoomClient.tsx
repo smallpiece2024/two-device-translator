@@ -170,13 +170,18 @@ export function RoomClient({
   }, [ttsEnabled]);
 
   // 半二重ゲート（bd-0ee/bd-rwi/bd-dnh）: 自分または相手のTTS再生中（＋残響猶予）
-  // はマイクトラックを一時ミュートし、再生音の再認識による翻訳の無限ループを防ぐ。
-  // 送信自体は継続する（無音を送る）— 送信を止めるとSTTがAudio Timeoutするため。
+  // はマイク入力を一時ミュートし、再生音の再認識による翻訳の無限ループを防ぐ。
+  // 送信自体は継続する（ゲイン0の無音を送る、bd-1or）— 送信を止めるとSTTが
+  // Audio Timeoutするため。
   // （キュー・ゲートの生成 effect は `sendMessage` 定義後に配置している —
   //   依存配列はレンダー時に評価されるため、const の初期化前だと TDZ になる）
   const halfDuplexRef = useRef<HalfDuplexGate | null>(null);
-  // ゲートの抑止状態を Recorder の muted prop へ反映するための state。
-  const [micMuted, setMicMuted] = useState(false);
+  // ゲートの抑止状態（TTS再生に伴うミュート要求）。
+  const [ttsSuppressed, setTtsSuppressed] = useState(false);
+  // 話者交代制（bd-9mo）: サーバーの話者調停が配信する現在の話者。
+  // 「話者が自分以外」の間は自分のマイクをミュートし、相手の生声を拾った
+  // 誤認識（クロストーク）を送らない。null は話者なし。
+  const [activeSpeakerId, setActiveSpeakerId] = useState<string | null>(null);
 
   /**
    * WS へ型安全にメッセージを送信するラッパー。
@@ -202,7 +207,7 @@ export function RoomClient({
     // （audioPlaybackQueue.setEnabled の設計判断）に伴い、その再生が終わるまで
     // ミュートも継続する（意図した挙動。スピーカーから音が出ている間は拾い得るため）。
     const gate = createHalfDuplexGate(undefined, (suppressed) => {
-      setMicMuted(suppressed);
+      setTtsSuppressed(suppressed);
     });
     halfDuplexRef.current = gate;
     const queue = createAudioPlaybackQueue(undefined, (playing) => {
@@ -278,6 +283,18 @@ export function RoomClient({
   const handleDetectLanguageChange = useCallback((next: boolean) => {
     setDetectLanguage(next);
   }, []);
+
+  /**
+   * Recorder からのマイク入力レベル通知（約200ms間隔、bd-1or）をサーバーへ
+   * `audio_level` として送る（話者調停の主判定材料、bd-9mo）。未接続時は
+   * `sendMessage` 側のガードでスキップされる。
+   */
+  const handleAudioLevel = useCallback(
+    (level: number) => {
+      sendMessage({ type: "audio_level", level });
+    },
+    [sendMessage],
+  );
 
   /**
    * オーナーの終了ボタン操作ハンドラ（2段階確認、誤タップ防止）。
@@ -389,6 +406,9 @@ export function RoomClient({
             // 再接続時、切断中に受け損ねた peer_playback_state(false) により
             // 「相手が再生中」の記録が残留しうるためリセットする（bd-rwi）。
             halfDuplexRef.current?.clearPeers();
+            // 話者状態も同様に、切断中に active_speaker(null) を受け損ねて
+            // 「相手が話者」のままミュートが解けない残留を防ぐ（bd-9mo）。
+            setActiveSpeakerId(null);
             dispatch({
               type: "JOINED",
               participantId: message.participantId,
@@ -417,6 +437,12 @@ export function RoomClient({
             // 退室した参加者の「再生中」記録が残ると抑止が解除されなくなるため
             // クリアする（bd-rwi）。
             halfDuplexRef.current?.clearPeer(message.participantId);
+            // 退室者が話者のままだとミュートが解けないためリセットする
+            // （サーバーも切断時に active_speaker(null) を配信するが、
+            // 順序・取りこぼしに備えた二重の防御。bd-9mo）。
+            setActiveSpeakerId((prev) =>
+              prev === message.participantId ? null : prev,
+            );
             dispatch({ type: "PARTICIPANT_LEFT", participantId: message.participantId });
             break;
           case "peer_playback_state":
@@ -427,6 +453,12 @@ export function RoomClient({
               message.participantId,
               message.playing,
             );
+            break;
+          case "active_speaker":
+            // 話者交代制（bd-9mo）: サーバーの話者調停による現在の話者。
+            // 「話者が自分以外」の間、Recorder の muted に反映して自分の
+            // マイクをミュートする（生声クロストーク対策）。
+            setActiveSpeakerId(message.participantId);
             break;
           case "participant_updated":
             // 本人を含む全参加者へ配信される（bd-ecb で確定した配信範囲）。
@@ -547,6 +579,13 @@ export function RoomClient({
   const isRecording = state.status === "recording";
   const isJoinedOrRecording = state.status === "joined" || state.status === "recording";
 
+  // マイクミュートの最終判定（bd-9mo）: TTS半二重抑止（自分/相手の再生中）と
+  // 話者交代制（他参加者が話者）の OR。どちらかが立っている間は
+  // Recorder がゲイン0の無音を送り続ける（録音・送信は継続、bd-1or）。
+  const otherIsSpeaking =
+    activeSpeakerId !== null && activeSpeakerId !== state.selfParticipantId;
+  const micMuted = ttsSuppressed || otherIsSpeaking;
+
   return (
     <div className={styles.container}>
       <header className={styles.header}>
@@ -609,6 +648,7 @@ export function RoomClient({
         language={currentLanguage}
         sendMessage={sendMessage}
         muted={micMuted}
+        onAudioLevel={handleAudioLevel}
         disabled={!isJoinedOrRecording || state.roomEnded}
         forceStop={state.roomEnded}
         enableTts={ttsEnabled}

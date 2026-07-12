@@ -97,9 +97,14 @@ app/(owner)/rooms/[roomId]/page.tsx     (Server Component: 認証・所有者確
 
 - 自分が**聞き手として**翻訳音声を受け取るか（FR-6.1）。ON/OFF を `update_settings`（`enableTts`）で送り、次の相手発話から反映。テキスト表示はトグルに関係なく常時（FR-6.2）。
 - 言語別 TTS（`ttsByLanguage`）はプロトタイプ同様クライアントで保持し、送信時に boolean へ解決してよい（MVP は単純 ON/OFF で可）。
-- **TTSと録音の半二重制約（bd-0ee/bd-rwi/bd-dnh、本番実機で確定した制約）**: 対面利用ではデバイスが近接するため、TTS再生音をマイクが拾い「再生音→誤認識→翻訳→再生→…」の無限ループが発生しうる（自デバイスのスピーカー経由と、**相手デバイス**のスピーカー経由の両方）。対策として、**自分または同室の誰かがTTS再生中（＋残響猶予 300ms）はマイクトラックを一時ミュートする**（`MediaStreamTrack.enabled=false`。bd-dnh で方式確定）。相手の再生状態は WS の `playback_state`→`peer_playback_state` 中継で知る（[websocket-protocol.md](./websocket-protocol.md) 参照）。
-  - **ミュート方式の理由**: 録音・チャンク送信は継続し**無音が送られる**ため、Google Streaming STT のストリームが途切れない。当初の「audio チャンクの送信を落とす」方式は、供給停止が長いと STT が `Audio Timeout Error` でストリームを落とし「Speech recognition stream timed out」エラーが頻発したため不採用（本番実機で確認）。
-  - 実装: `halfDuplex.ts`（純粋モジュール、抑止状態の変化通知）＋ `audioPlaybackQueue` の再生状態変化通知＋ `Recorder` の `muted` prop。
+- **TTSと録音の半二重制約（bd-0ee/bd-rwi/bd-dnh/bd-1or、本番実機で確定した制約）**: 対面利用ではデバイスが近接するため、TTS再生音をマイクが拾い「再生音→誤認識→翻訳→再生→…」の無限ループが発生しうる（自デバイスのスピーカー経由と、**相手デバイス**のスピーカー経由の両方）。対策として、**自分または同室の誰かがTTS再生中（＋残響猶予 300ms）はマイク入力を一時ミュートする**。相手の再生状態は WS の `playback_state`→`peer_playback_state` 中継で知る（[websocket-protocol.md](./websocket-protocol.md) 参照）。
+  - **ミュート方式（bd-1or で確定: WebAudio ゲイン0）**: `getUserMedia` のストリームを `source → GainNode → MediaStreamAudioDestinationNode → MediaRecorder` のパイプラインに通し、ミュートは**ゲイン0**で行う（`audioPipeline.ts`）。エンコーダが**無音の実データ**を出し続けるため、録音・チャンク送信が継続し Google Streaming STT のストリームが途切れない。変遷: (1)「audio チャンクの送信を落とす」方式 → 供給停止で STT が `Audio Timeout Error`（不採用）。(2)「`MediaStreamTrack.enabled=false`」方式（bd-dnh）→ モバイルブラウザでサイズ0チャンクとなり `blob.size===0` スキップで同じく Audio Timeout が再発（本番実機 2026-07-12、不採用）。(3) ゲイン0方式（現行）。WebAudio 不可の環境では (2) にフォールバックする。
+  - あわせて `audioPipeline.ts` は AnalyserNode（**ゲイン適用前**）でマイク入力レベル（RMS 0..1）を測定し、`Recorder` が録音中に約200ms間隔で `onAudioLevel` へ通知する（話者交代制の判定材料、下記）。
+  - 実装: `audioPipeline.ts`＋`halfDuplex.ts`（純粋モジュール、抑止状態の変化通知）＋ `audioPlaybackQueue` の再生状態変化通知＋ `Recorder` の `muted` prop。
+- **話者交代制（bd-6h1/bd-9mo、生声クロストーク対策）**: TTS半二重だけでは、相手が**生声で話している間**に自分のマイクが相手の声を拾う混線（誤認識→翻訳→TTS）を防げない（本番実機 2026-07-12）。プッシュ・トゥ・トークは不採用（タクシー運転手が乗客と話す想定で端末を操作しない、ユーザー決定）。サーバーの話者調停（[server-design.md「話者調停」](./server-design.md)）が「一度に話者は1人」を判定し、クライアントは以下を結線する:
+  - 録音中、`onAudioLevel` のレベルを `audio_level` としてサーバーへ送る（調停の主判定材料）。
+  - `active_speaker` 受信で現在の話者を保持し、**マイクミュートの最終判定を「TTS半二重抑止 OR（話者が自分以外）」の OR** で行い `Recorder.muted` に渡す。
+  - リセット（取りこぼし対策の二重防御）: 自分の再接続（`joined`）で話者状態をリセット。`participant_left` で退室者が話者ならリセット。
 
 ### QRDisplay（owner のみ）
 
