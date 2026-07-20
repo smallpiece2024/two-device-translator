@@ -69,7 +69,8 @@ export async function signGuestToken(p: { roomId: string; participantId: string;
     .setProtectedHeader({ alg: "HS256" }).setExpirationTime(`${p.expSec}s`).sign(secret);
 }
 export async function verifyGuestToken(token: string) {
-  const { payload } = await jwtVerify(token, secret); // 期限切れ/改竄は例外
+  // algorithms を HS256 に固定（alg混同攻撃への多層防御、bd-qpq で追加）。期限切れ/改竄は例外
+  const { payload } = await jwtVerify(token, secret, { algorithms: ["HS256"] });
   return payload as { roomId: string; participantId: string };
 }
 ```
@@ -92,6 +93,7 @@ export async function verifyGuestToken(token: string) {
 - `middleware.ts` の `matcher` は **オーナー領域のみ**（`/rooms/:path*`, `/history/:path*`）。`(public)`（`/login`, `/join/*`, `/room/*`, `/auth/callback`）は対象外。ゲスト検証は各ページの Server Component（Node.js Runtime）で行う。
 - middleware でエラーは `console.error` でログし握りつぶさない。未ログインは `/login` へ redirect。
 - GCE デプロイのため Vercel 専用機能（Edge Middleware の高度な依存）に寄りかからない（CLAUDE.md 固有ルール）。middleware は Supabase セッション確認の最小用途に留める。
+- **`redirect` クエリの検証はホワイトリスト方式（bd-63d で確定）**: ログイン後の遷移先 `redirect` は `src/lib/safeRedirect.ts` の `resolveSafeRedirect` で検証してから使う。プレフィックス判定（`//` 拒否等）のブラックリスト方式は **WHATWG URLパーサの制御文字除去（タブ/CR/LF は位置を問わず除去）で迂回される**（`"/\t/evil.com"` → `//evil.com` のオープンリダイレクト。bd-63d レビューで実証）ため、「`/` 始まり・2文字目 `/` `\` 以外・許可文字（英数と `-._~!$&'()*+,;=:@%/?`）のみ」の正規表現で判定する。`/auth/callback` ではさらに `new URL(destination, origin).origin === origin` の再検証を最終防御として行う（多層防御）。回帰テスト: `tests/unit/safeRedirect.test.ts`。
 
 ---
 

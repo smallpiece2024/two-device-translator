@@ -8,6 +8,7 @@
 export * from "./ws-protocol/schema";
 export * from "./ws-protocol/types";
 export * from "./languages/registry";
+export * from "./auth/guestToken";
 
 /** @deprecated 雛形段階のプレースホルダ。`@shared/index` の解決確認用に残置。 */
 export const SHARED_PLACEHOLDER = "shared" as const;

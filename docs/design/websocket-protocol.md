@@ -150,6 +150,24 @@ MediaRecorder の Blob を base64 化（WebM/Opus 48kHz）。STTストリーム�
 
 **オーナーのみ**送信可能。サーバーはルームを `ended` にし、要約を生成して両者へ `summary` を配信、`room_ended` を全参加者へ送る（FR-11.3 / FR-12.1）。ゲストが送った場合は `error`（`fatal:false`）。
 
+### `playback_state`（再生状態通知、bd-rwi）
+
+```json
+{ "type": "playback_state", "playing": true }
+```
+
+自デバイスのTTS再生状態（audioPlaybackQueue の再生開始/停止）をサーバーへ通知する。サーバーは同室の**他**参加者へ `peer_playback_state` として中継する（送信者本人には返さない。状態の永続化・サーバー側保持はしない）。
+
+対面利用では相手端末のスピーカー音を自分のマイクが拾い、「翻訳音声→発話として誤認識→翻訳→再生→…」の音響フィードバックループが発生しうる（本番実機で確認）。受信側は相手の再生中＋残響猶予の間、自分の**マイクトラックを一時ミュート**する（**相互半二重**。`audio` チャンクの送信自体は無音のまま継続する — 送信を止めるとSTTが Audio Timeout するため。bd-dnh。[frontend-design.md「TTSと録音の半二重制約」](./frontend-design.md#ttstoggle) 参照）。
+
+### `audio_level`（入力レベル通知、bd-6h1）
+
+```json
+{ "type": "audio_level", "level": 0.42 }
+```
+
+録音中のクライアントが約200ms間隔で送る、マイク入力レベル（**ゲイン適用前**のRMS、0〜1）。サーバーの**話者調停**（[server-design.md「話者調停（話者交代制）」](./server-design.md#話者調停話者交代制bd-6h1) 参照）が「どの端末に大きな音が入っているか」の主判定材料に使う。永続化せずメモリのみ（参加者ごとに直近値＋受信時刻を保持、鮮度1秒）。WebAudio が使えないクライアントは送らなくてよい（サーバーは到着順のみで判定するフォールバックで動作する）。
+
 ---
 
 ## server → client メッセージ
@@ -181,6 +199,25 @@ MediaRecorder の Blob を base64 化（WebM/Opus 48kHz）。STTストリーム�
 
 `participant_joined` / `participant_left` は **Phase1 実装済み**（bd-124.3 で前倒し。join成功時・切断時に在室中の他参加者へ配信。UIの参加者数表示は present な参加者のみカウントする）。`participant_left.reason`（`"disconnected"`（一時断）/ `"ended"`（終了）の区別）と `participant_updated` は Phase2（一時断と終了の区別は [server-design.md](./server-design.md#不在終了判定) を参照）。
 
+> **`participant_updated` の配信範囲（bd-ecb で確定）**: `participant_joined` / `participant_left` が「在室中の**他**参加者へ配信」なのに対し、`participant_updated` は**話者本人を含む全参加者へ配信**する。言語検出モード（FR-4.3）で確定した言語は本人のUI（言語表示・検出トグルの自動OFF）にも反映が必要なため。現時点の発火契機は言語検出モードの確定のみ（bd-ecb 実装。フロント側の受信ハンドリングは bd-fki のスコープ）。
+
+### `peer_playback_state`（他参加者の再生状態、bd-rwi）
+
+```json
+{ "type": "peer_playback_state", "participantId": "p_456", "playing": true }
+```
+
+client → server の `playback_state` を、同室の**他**参加者へ中継したもの（送信者本人には配信しない）。受信側は `playing:true` の間＋残響猶予（300ms）、自分の**マイクトラックを一時ミュート**する（相互半二重、音響フィードバックループ対策。`audio` の送信自体は無音のまま継続する）。切断・再接続で `playing:false` を受け損ねる場合に備え、受信側は `participant_left` / `participant_joined` で該当参加者の記録を、自分の再接続（`joined`）で全記録をクリアする。
+
+### `active_speaker`（話者通知、bd-6h1）
+
+```json
+{ "type": "active_speaker", "participantId": "p_123" }
+{ "type": "active_speaker", "participantId": null }
+```
+
+サーバーの話者調停（話者交代制＝生声クロストーク対策）が話者を確定/解放した際に、同室の**全参加者（話者本人を含む）**へ配信する。`participantId: null` は「話者なし」。受信側は「話者が自分以外」の間、自分のマイクを一時ミュートする（TTS半二重ミュートとのOR。結線は bd-9mo）。切断・再接続で解放通知を受け損ねる場合に備え、受信側は自分の再接続（`joined`）でリセットし、`participant_left` で退室者が話者ならリセットする（サーバー側も切断時に解放・配信するため二重の防御）。
+
 ### `transcript_interim` / `transcript_final` / `utterance_committed`（話者本人にのみ）
 
 ```json
@@ -190,6 +227,8 @@ MediaRecorder の Blob を base64 化（WebM/Opus 48kHz）。STTストリーム�
 ```
 
 interim は**表示専用・翻訳/TTS対象外**（FR-7.5）。これらは発話者デバイスにのみ返す（自分の原文フィードバック用）。`reason` は `"silence" | "maxChars" | "maxSeconds" | "commit" | "stop"`。
+
+> **話者調停による破棄（bd-6h1）**: 話者調停が拒否した STT 結果（他参加者が話者の間に届いたもの、または音量差で「相手の声を拾った」と判定されたもの）は、`transcript_interim` / `transcript_final` とも配信されず、発話バッファ・言語検出にも使われない（サーバー側で破棄）。
 
 ### `message`（確定発話・全参加者へ配信）
 

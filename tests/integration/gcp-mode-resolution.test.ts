@@ -128,7 +128,14 @@ function collectMessages(ws: WebSocket, count: number): Promise<ServerMessage[]>
     const received: ServerMessage[] = [];
     const onMessage = (data: WebSocket.RawData) => {
       try {
-        received.push(JSON.parse(data.toString("utf8")) as ServerMessage);
+        const message = JSON.parse(data.toString("utf8")) as ServerMessage;
+        // active_speaker（話者調停、bd-6h1）は発話活動に伴い非同期に割り込む
+        // ため、このテストの関心事（GCP実装の差し替え解決）から除外する
+        // （調停自体の検証は tests/integration/speaker-arbitration.test.ts）。
+        if (message.type === "active_speaker") {
+          return;
+        }
+        received.push(message);
         if (received.length >= count) {
           ws.off("message", onMessage);
           resolve(received);
@@ -148,6 +155,12 @@ describe("startServer() の GCP_MODE / 明示オプションによる実装差�
   let clients: WebSocket[] = [];
   let originalGcpMode: string | undefined;
   let originalEnableTts: string | undefined;
+  // このテストは仮トークン("dummy-token")での join を前提にしている
+  // （招待フロー未実装のため、正規のSupabase/ゲストJWTは発行できない）。
+  // bd-0jy で join 検証が本実装（strict）化されたため、このテストの意図
+  // （GCP実装差し替えロジックの検証）を壊さない最小対応として
+  // AUTH_MODE=insecure を明示する（server/auth/verifyParticipant.ts 参照）。
+  let originalAuthMode: string | undefined;
 
   function getPort(server: WebSocketServer): number {
     const address = server.address();
@@ -166,7 +179,9 @@ describe("startServer() の GCP_MODE / 明示オプションによる実装差�
   beforeEach(() => {
     originalGcpMode = process.env.GCP_MODE;
     originalEnableTts = process.env.ENABLE_TTS;
+    originalAuthMode = process.env.AUTH_MODE;
     delete process.env.ENABLE_TTS;
+    process.env.AUTH_MODE = "insecure";
   });
 
   afterEach((done) => {
@@ -179,6 +194,11 @@ describe("startServer() の GCP_MODE / 明示オプションによる実装差�
       delete process.env.ENABLE_TTS;
     } else {
       process.env.ENABLE_TTS = originalEnableTts;
+    }
+    if (originalAuthMode === undefined) {
+      delete process.env.AUTH_MODE;
+    } else {
+      process.env.AUTH_MODE = originalAuthMode;
     }
 
     clients.forEach((client) => client.terminate());

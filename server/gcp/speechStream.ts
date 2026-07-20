@@ -60,10 +60,23 @@ export interface SpeechStreamOptions {
    *  レジストリ実装後は `shared/languages` 由来の解決関数を使う）。
    */
   languageCode: string;
+  /**
+   * 言語検出モード（FR-4.3・D-9）用の候補言語コード一覧。
+   * 指定時のみ `streamingRecognize` の `config.alternativeLanguageCodes` に付与する
+   * （`docs/design/gcp-integration.md`「言語検出モード」参照）。
+   * 通常モード（既定）では省略し、`languageCode` 固定で認識する。
+   */
+  alternativeLanguageCodes?: string[];
   /** interim 認識結果のコールバック（表示のみ・翻訳/TTSには使わない） */
   onInterim: (text: string) => void;
-  /** final 認識結果のコールバック */
-  onFinal: (text: string) => void;
+  /**
+   * final 認識結果のコールバック。
+   * `languageCode` は `results[0].languageCode`（言語検出モード時に STT が
+   * 判定した実際の言語）。通常モードでは値が入らないことがあるため、
+   * 呼び出し側は未指定を「検出情報なし」として扱うこと（既存呼び出し互換のため
+   * 第2引数は optional）。
+   */
+  onFinal: (text: string, languageCode?: string) => void;
   /**
    * エラー・時間上限到達時のコールバック。
    * @param message エラーメッセージ（ユーザー表示用。内部詳細は含めない）
@@ -95,18 +108,40 @@ export function createSpeechStream(
   options: SpeechStreamOptions,
   client?: SpeechClient,
 ): SpeechStreamHandle {
-  const { languageCode, onInterim, onFinal, onError } = options;
+  const { languageCode, alternativeLanguageCodes, onInterim, onFinal, onError } = options;
 
   const speechClient = client ?? getSpeechClient();
 
+  /**
+   * ストリームが書き込み不能になったか（エラー発生・end()・destroy() 後）。
+   * bd-c3z: 終了済みストリームへの write は Node 側で 'error' イベント
+   * （"Cannot call write after a stream was destroyed"）を発火させ、
+   * チャンクごとにエラーログとクライアント通知が連鎖するため、ガードして
+   * 静かに破棄する（初回のみ警告ログ1行）。
+   */
+  let terminated = false;
+  let droppedAfterTerminationWarned = false;
+
+  const speechConfig: {
+    encoding: "WEBM_OPUS";
+    sampleRateHertz: number;
+    languageCode: string;
+    enableAutomaticPunctuation: boolean;
+    alternativeLanguageCodes?: string[];
+  } = {
+    encoding: "WEBM_OPUS",
+    sampleRateHertz: 48000,
+    languageCode,
+    enableAutomaticPunctuation: true,
+  };
+  // 言語検出モード（FR-4.3）時のみ付与する（gcp-integration.md「言語検出モード」参照）
+  if (alternativeLanguageCodes && alternativeLanguageCodes.length > 0) {
+    speechConfig.alternativeLanguageCodes = alternativeLanguageCodes;
+  }
+
   const recognizeStream = speechClient
     .streamingRecognize({
-      config: {
-        encoding: "WEBM_OPUS",
-        sampleRateHertz: 48000,
-        languageCode,
-        enableAutomaticPunctuation: true,
-      },
+      config: speechConfig,
       interimResults: true,
     })
     .on("data", (data: StreamingRecognizeResponse) => {
@@ -124,13 +159,22 @@ export function createSpeechStream(
 
       if (result.isFinal) {
         // final: 発話バッファへ追加する確定テキスト
-        onFinal(text);
+        // languageCode は言語検出モード時に STT が判定した実際の言語。
+        // 未指定時は第2引数自体を渡さない（既存呼び出し・テストとの互換のため、
+        // 明示的な undefined 引数付き呼び出しにはしない）。
+        if (result.languageCode !== undefined) {
+          onFinal(text, result.languageCode);
+        } else {
+          onFinal(text);
+        }
       } else {
         // interim: 表示専用・翻訳・TTS は行わない
         onInterim(text);
       }
     })
     .on("error", (err: Error) => {
+      // エラー後のストリームは書き込み不能（bd-c3z: 以降の write は破棄する）。
+      terminated = true;
       const message = err.message ?? String(err);
       console.error("[speechStream] STT stream error:", message);
 
@@ -153,7 +197,12 @@ export function createSpeechStream(
       }
     })
     .on("end", () => {
+      terminated = true;
       console.log("[speechStream] STT stream ended.");
+    })
+    .on("close", () => {
+      // error/end を経ずに close のみ発火するケースの取りこぼし防止（レビュー指摘）。
+      terminated = true;
     });
 
   const handle: SpeechStreamHandle = {
@@ -162,9 +211,22 @@ export function createSpeechStream(
      * 呼び出し元で base64 → Buffer 変換を行い、Buffer を渡すこと。
      */
     write(chunk: Buffer): void {
+      // 終了済み（エラー・end・destroy 後）のストリームへは書き込まない
+      // （bd-c3z: チャンクごとの 'error' イベント連鎖を防ぐ）。クライアントが
+      // 停止前に送り続けた残チャンクは静かに破棄する（初回のみ警告1行）。
+      if (terminated) {
+        if (!droppedAfterTerminationWarned) {
+          droppedAfterTerminationWarned = true;
+          console.warn(
+            "[speechStream] dropping audio chunks written after stream termination (further drops are silent)",
+          );
+        }
+        return;
+      }
       try {
         recognizeStream.write(chunk);
       } catch (err) {
+        terminated = true;
         const message = err instanceof Error ? err.message : String(err);
         console.error("[speechStream] Error writing to STT stream:", message);
         onError("Failed to send audio to speech recognition.", false);
@@ -175,6 +237,7 @@ export function createSpeechStream(
      * STT ストリームへの書き込みを正常終了する（stop メッセージ受信時に呼ぶ）。
      */
     end(): void {
+      terminated = true;
       try {
         recognizeStream.end();
       } catch (err) {
@@ -187,6 +250,7 @@ export function createSpeechStream(
      * STT ストリームを強制破棄する（接続 close・再 start 時のクリーンアップ用）。
      */
     destroy(): void {
+      terminated = true;
       try {
         recognizeStream.destroy();
       } catch (err) {
@@ -224,5 +288,7 @@ interface StreamingRecognizeResponse {
       transcript?: string;
     }>;
     isFinal?: boolean;
+    /** 言語検出モード（alternativeLanguageCodes 指定時）に STT が判定した実際の言語コード */
+    languageCode?: string;
   }>;
 }

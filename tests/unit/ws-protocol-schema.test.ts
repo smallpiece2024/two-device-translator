@@ -16,6 +16,8 @@ import {
   updateSettingsSchema,
   participantJoinedSchema,
   participantLeftSchema,
+  requestEndSchema,
+  roomEndedSchema,
 } from "../../shared/ws-protocol/schema";
 
 /**
@@ -105,6 +107,38 @@ describe("ws-protocol schema", () => {
     it("stop メッセージをparseできる", () => {
       const input = { type: "stop" };
       expect(clientMessageSchema.parse(input)).toEqual(input);
+    });
+
+    it("playback_state メッセージをparseできる（bd-rwi）", () => {
+      const input = { type: "playback_state", playing: true };
+      expect(clientMessageSchema.parse(input)).toEqual(input);
+    });
+
+    it("playback_state: playing 欠落を拒否する（bd-rwi）", () => {
+      expect(() => clientMessageSchema.parse({ type: "playback_state" })).toThrow();
+    });
+
+    it("audio_level メッセージをparseできる（bd-6h1）", () => {
+      const input = { type: "audio_level", level: 0.42 };
+      expect(clientMessageSchema.parse(input)).toEqual(input);
+    });
+
+    it("audio_level: 境界値 0 / 1 を受理する（bd-6h1）", () => {
+      expect(clientMessageSchema.parse({ type: "audio_level", level: 0 })).toEqual({
+        type: "audio_level",
+        level: 0,
+      });
+      expect(clientMessageSchema.parse({ type: "audio_level", level: 1 })).toEqual({
+        type: "audio_level",
+        level: 1,
+      });
+    });
+
+    it("audio_level: 範囲外（負数・1超）・型不正・欠落を拒否する（bd-6h1）", () => {
+      expect(() => clientMessageSchema.parse({ type: "audio_level", level: -0.1 })).toThrow();
+      expect(() => clientMessageSchema.parse({ type: "audio_level", level: 1.1 })).toThrow();
+      expect(() => clientMessageSchema.parse({ type: "audio_level", level: "0.5" })).toThrow();
+      expect(() => clientMessageSchema.parse({ type: "audio_level" })).toThrow();
     });
   });
 
@@ -313,6 +347,38 @@ describe("ws-protocol schema", () => {
       const input = { type: "update_settings", enableTts: "false" };
       expect(() => clientMessageSchema.parse(input)).toThrow();
     });
+
+    /**
+     * bd-fki: updateSettingsSchema に追加された language/displayName の境界値テスト
+     * （テストレビュー should-fix: 個別スキーマの境界値検証を追加）。
+     */
+    it("update_settings: language 付きの正しい形をparseできる", () => {
+      const input = { type: "update_settings", enableTts: true, language: "en-US" };
+      expect(updateSettingsSchema.parse(input)).toEqual(input);
+    });
+
+    it("update_settings: displayName がちょうど50文字なら許可する", () => {
+      const input = {
+        type: "update_settings",
+        enableTts: true,
+        displayName: "a".repeat(50),
+      };
+      expect(() => updateSettingsSchema.parse(input)).not.toThrow();
+    });
+
+    it("update_settings: displayName が51文字の場合は拒否する", () => {
+      const input = {
+        type: "update_settings",
+        enableTts: true,
+        displayName: "a".repeat(51),
+      };
+      expect(() => updateSettingsSchema.parse(input)).toThrow();
+    });
+
+    it("update_settings: language が未対応言語コード('fr-FR')の場合は拒否する", () => {
+      const input = { type: "update_settings", enableTts: true, language: "fr-FR" };
+      expect(() => updateSettingsSchema.parse(input)).toThrow();
+    });
   });
 
   describe("clientMessageSchema: 異常系（type不正・未実装）", () => {
@@ -321,9 +387,9 @@ describe("ws-protocol schema", () => {
       expect(() => clientMessageSchema.parse(input)).toThrow();
     });
 
-    it("Phase2/3の request_end（未実装）を拒否する", () => {
+    it("request_end（bd-e3p、オーナーによるルーム終了要求）をparseできる", () => {
       const input = { type: "request_end" };
-      expect(() => clientMessageSchema.parse(input)).toThrow();
+      expect(clientMessageSchema.parse(input)).toEqual(input);
     });
 
     it("type フィールド自体が欠落している場合は拒否する", () => {
@@ -365,6 +431,30 @@ describe("ws-protocol schema", () => {
         text: "今日は雨が降っているので",
       };
       expect(serverMessageSchema.parse(input)).toEqual(input);
+    });
+
+    it("peer_playback_state メッセージをparseできる（bd-rwi）", () => {
+      const input = {
+        type: "peer_playback_state",
+        participantId: "p1",
+        playing: true,
+      };
+      expect(serverMessageSchema.parse(input)).toEqual(input);
+    });
+
+    it("active_speaker メッセージをparseできる（participantId / null の両方、bd-6h1）", () => {
+      const withId = { type: "active_speaker", participantId: "p1" };
+      expect(serverMessageSchema.parse(withId)).toEqual(withId);
+
+      const released = { type: "active_speaker", participantId: null };
+      expect(serverMessageSchema.parse(released)).toEqual(released);
+    });
+
+    it("active_speaker: 空文字participantId・欠落を拒否する（bd-6h1）", () => {
+      expect(() =>
+        serverMessageSchema.parse({ type: "active_speaker", participantId: "" }),
+      ).toThrow();
+      expect(() => serverMessageSchema.parse({ type: "active_speaker" })).toThrow();
     });
 
     it("transcript_final メッセージ（仕様書例）をparseできる", () => {
@@ -489,8 +579,21 @@ describe("ws-protocol schema", () => {
       expect(() => serverMessageSchema.parse(input)).toThrow();
     });
 
-    it("Phase2/3の room_ended（未実装）を拒否する", () => {
-      const input = { type: "room_ended", reason: "owner_ended" };
+    it.each(["owner_ended", "auto_timeout"])(
+      "room_ended（bd-e3p、reason='%s'）をparseできる",
+      (reason) => {
+        const input = { type: "room_ended", reason };
+        expect(serverMessageSchema.parse(input)).toEqual(input);
+      },
+    );
+
+    it("room_ended: reason が未対応の値の場合は拒否する", () => {
+      const input = { type: "room_ended", reason: "unknown_reason" };
+      expect(() => serverMessageSchema.parse(input)).toThrow();
+    });
+
+    it("room_ended: reason 欠落を拒否する", () => {
+      const input = { type: "room_ended" };
       expect(() => serverMessageSchema.parse(input)).toThrow();
     });
   });
@@ -546,16 +649,17 @@ describe("ws-protocol schema", () => {
   });
 
   describe("個別スキーマのエクスポート", () => {
-    it("joinSchema, updateSettingsSchema, startSchema, audioClientSchema, commitSchema, stopSchema が個別にexportされている", () => {
+    it("joinSchema, updateSettingsSchema, startSchema, audioClientSchema, commitSchema, stopSchema, requestEndSchema が個別にexportされている", () => {
       expect(joinSchema).toBeDefined();
       expect(updateSettingsSchema).toBeDefined();
       expect(startSchema).toBeDefined();
       expect(audioClientSchema).toBeDefined();
       expect(commitSchema).toBeDefined();
       expect(stopSchema).toBeDefined();
+      expect(requestEndSchema).toBeDefined();
     });
 
-    it("joinedSchema, messageSchema, transcript系, audioServerSchema, participant系, errorSchema が個別にexportされている", () => {
+    it("joinedSchema, messageSchema, transcript系, audioServerSchema, participant系, errorSchema, roomEndedSchema が個別にexportされている", () => {
       expect(joinedSchema).toBeDefined();
       expect(messageSchema).toBeDefined();
       expect(transcriptInterimSchema).toBeDefined();
@@ -565,6 +669,7 @@ describe("ws-protocol schema", () => {
       expect(participantJoinedSchema).toBeDefined();
       expect(participantLeftSchema).toBeDefined();
       expect(errorSchema).toBeDefined();
+      expect(roomEndedSchema).toBeDefined();
     });
   });
 });

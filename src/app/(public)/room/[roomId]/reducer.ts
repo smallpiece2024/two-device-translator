@@ -12,6 +12,8 @@ import type {
   JoinedMessage,
   MessageMessage,
   ParticipantSummary,
+  RoomEndedReason,
+  SupportedLanguage,
 } from "@shared/index";
 
 /** 画面全体の接続・録音状態 */
@@ -36,6 +38,8 @@ export interface RoomState {
   /** 終了時要約（Phase3） */
   summary: string | null;
   roomEnded: boolean;
+  /** ルーム終了理由（`"owner_ended"` | `"auto_timeout"`）。終了バナーの文言出し分けに使う */
+  endedReason: RoomEndedReason | null;
   error: string | null;
 }
 
@@ -49,6 +53,7 @@ export const initialRoomState: RoomState = {
   topicSuggestion: null,
   summary: null,
   roomEnded: false,
+  endedReason: null,
   error: null,
 };
 
@@ -63,13 +68,26 @@ export type RoomAction =
     }
   | { type: "PARTICIPANT_JOINED"; participant: ParticipantView }
   | { type: "PARTICIPANT_LEFT"; participantId: string }
-  | { type: "PARTICIPANT_UPDATED"; participant: ParticipantView }
+  /**
+   * `participant_updated`（bd-ecb/bd-fki）の反映。サーバーからのペイロードは
+   * `participantSummarySchema` の全項目（role/present含む）ではなく
+   * `participantId`/`language`/`displayName`(optional) のみのため、
+   * 既存の参加者一覧の該当エントリへ**マージ**する形にする（role/present は
+   * 既存値を維持。`displayName` 省略時も既存値を維持、
+   * `docs/design/websocket-protocol.md` `participant_updated` 節参照）。
+   */
+  | {
+      type: "PARTICIPANT_UPDATED";
+      participantId: string;
+      language: SupportedLanguage;
+      displayName?: string;
+    }
   | { type: "INTERIM"; text: string }
   | { type: "MESSAGE"; message: MessageView }
   | { type: "IDLE_HINT" }
   | { type: "TOPIC"; suggestion: string }
   | { type: "SUMMARY"; summary: string }
-  | { type: "ROOM_ENDED" }
+  | { type: "ROOM_ENDED"; reason?: RoomEndedReason }
   | { type: "ERROR"; message: string; fatal: boolean }
   | { type: "RESET" };
 
@@ -130,7 +148,13 @@ export function roomReducer(state: RoomState, action: RoomAction): RoomState {
       return {
         ...state,
         participants: state.participants.map((p) =>
-          p.participantId === action.participant.participantId ? action.participant : p,
+          p.participantId === action.participantId
+            ? {
+                ...p,
+                language: action.language,
+                displayName: action.displayName ?? p.displayName,
+              }
+            : p,
         ),
       };
 
@@ -154,7 +178,8 @@ export function roomReducer(state: RoomState, action: RoomAction): RoomState {
       return { ...state, summary: action.summary };
 
     case "ROOM_ENDED":
-      return { ...state, roomEnded: true };
+      // reason 省略時（`joined.room.status==="ended"` 経由等）は既存の endedReason を維持する。
+      return { ...state, roomEnded: true, endedReason: action.reason ?? state.endedReason };
 
     case "ERROR":
       return {

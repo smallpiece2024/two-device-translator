@@ -51,6 +51,15 @@ export default defineConfig({
       timeout: 120_000,
       env: {
         NEXT_PUBLIC_WS_URL: `ws://127.0.0.1:${WS_PORT}/ws`,
+        // middleware（src/lib/supabase/middleware.ts）が Supabase クライアント生成に
+        // 必要とする環境変数。E2E は「未ログイン→/login リダイレクト」（fail-closed）
+        // だけを検証するため実プロジェクトの値は不要で、ダミー値で十分
+        // （getUser が失敗 → 未ログイン扱い → リダイレクト、が期待動作そのもの）。
+        // 実値を書かないこと（このリポジトリは public）。
+        NEXT_PUBLIC_SUPABASE_URL:
+          process.env.NEXT_PUBLIC_SUPABASE_URL ?? "https://e2e-dummy.supabase.co",
+        NEXT_PUBLIC_SUPABASE_ANON_KEY:
+          process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "sb_publishable_e2e-dummy-anon-key",
       },
     },
     {
@@ -63,6 +72,10 @@ export default defineConfig({
         GCP_MODE: "mock",
         WS_PORT: String(WS_PORT),
         ENABLE_TTS: "true",
+        // ログインUI(bd-63d)・招待フロー(bd-jny)が未実装のため、E2Eでは
+        // 仮トークンでの join を通す互換モードを使う（本番では設定禁止。
+        // server/auth/verifyParticipant.ts 参照）。
+        AUTH_MODE: "insecure",
       },
     },
   ],

@@ -1,13 +1,25 @@
 "use client";
 
 /**
- * ルーム参加フォーム（Phase1 簡易版）。
+ * ルーム参加フォーム（Phase1 簡易版 + ゲストクッキー連携）。
  *
  * URL直打ちでルームに入ってきたユーザーが、表示名（任意）・話す言語・
  * role（owner/guest、2台での動作確認用の簡易選択）を指定して参加するための
  * フォーム。送信すると `RoomClient` をマウントし、WS接続・`join` 送信を開始する。
  *
- * 認証は Phase1 ダミーのまま（`RoomClient` 内の仮トークン発行）。
+ * `guestToken`（`/api/guest/join` 経由で発行された `gtt_guest` クッキー）が
+ * 存在する場合は、そのユーザーは既にゲストとして参加確定済みであるため、
+ * 「役割」セレクトを表示せず role を強制的に `"guest"` に固定する。
+ * このセレクトで誤って `"owner"` を選んでしまうと、ゲスト用トークンで
+ * オーナーとして join しようとして認証に失敗し行き詰まる穴があったため
+ * （コードレビュー指摘事項）。表示名・言語の入力欄は引き続き残す。
+ *
+ * `ownerToken`（Server Component がルーム所有者と判定した場合に渡される
+ * Supabase アクセストークン、bd-fmk）が存在する場合も同様に、役割セレクトを
+ * 表示せず role を `"owner"` に固定する。
+ *
+ * どちらのトークンも無い場合は Phase1 ダミー（`RoomClient` 内の仮トークン
+ * 発行）にフォールバックする（dev/E2E の `AUTH_MODE=insecure` 互換）。
  * ルームはサーバー側で初回join時に自動作成される（`server/room/roomManager.ts`）。
  */
 import { useId, useState, type FormEvent } from "react";
@@ -16,9 +28,28 @@ import { LanguageSelector } from "@/components/LanguageSelector/LanguageSelector
 import { RoomClient } from "./RoomClient";
 import styles from "./JoinForm.module.css";
 
+/**
+ * ゲストの参加時プロフィール（`/join/[inviteToken]` で入力済みの表示名・言語）。
+ * Server Component がクッキー検証+participants 行の照合に成功した場合のみ渡され、
+ * 入力フォームをスキップして直接入室する（bd-1is: 名前の二重入力解消）。
+ */
+export interface GuestProfile {
+  displayName?: string;
+  language: SupportedLanguage;
+}
+
 export interface JoinFormProps {
   roomId: string;
   wsUrl: string;
+  /**
+   * ルーム所有者のSupabaseアクセストークン（Server Component が所有者と
+   * 判定した場合のみ渡される。`RoomClient` へそのまま中継する）。
+   */
+  ownerToken?: string;
+  /** `gtt_guest` クッキーがあれば渡される（`RoomClient` へそのまま中継する）。 */
+  guestToken?: string;
+  /** ゲストの参加時プロフィール。guestToken とセットで渡されるとフォームをスキップする。 */
+  guestProfile?: GuestProfile;
 }
 
 type RoomRole = "owner" | "guest";
@@ -31,8 +62,24 @@ interface JoinConfig {
 
 const DEFAULT_LANGUAGE: SupportedLanguage = "ja-JP";
 
-export function JoinForm({ roomId, wsUrl }: JoinFormProps) {
-  const [config, setConfig] = useState<JoinConfig | null>(null);
+export function JoinForm({
+  roomId,
+  wsUrl,
+  ownerToken,
+  guestToken,
+  guestProfile,
+}: JoinFormProps) {
+  // guestToken + guestProfile が揃っている場合は `/join/[inviteToken]` で
+  // 入力済みのため、フォームをスキップして直接入室する（bd-1is）。
+  const [config, setConfig] = useState<JoinConfig | null>(
+    guestToken && guestProfile
+      ? {
+          displayName: guestProfile.displayName ?? "",
+          language: guestProfile.language,
+          role: "guest",
+        }
+      : null
+  );
   const [displayName, setDisplayName] = useState("");
   const [language, setLanguage] = useState<SupportedLanguage>(DEFAULT_LANGUAGE);
   const [role, setRole] = useState<RoomRole>("guest");
@@ -47,13 +94,20 @@ export function JoinForm({ roomId, wsUrl }: JoinFormProps) {
         role={config.role}
         displayName={config.displayName || undefined}
         language={config.language}
+        ownerToken={ownerToken}
+        guestToken={guestToken}
       />
     );
   }
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    setConfig({ displayName: displayName.trim(), language, role });
+    // トークンがある場合はUI上の選択肢を隠しているが、state改ざん等の
+    // 不測の経路を考慮し、送信時にも役割をトークン種別に応じて強制する多層防御。
+    // ownerToken を guestToken より優先する（page.tsx は所有者判定時に
+    // guestToken を渡さないため通常は同時に存在しないが、防御的に扱う）。
+    const forcedRole: RoomRole = ownerToken ? "owner" : guestToken ? "guest" : role;
+    setConfig({ displayName: displayName.trim(), language, role: forcedRole });
   };
 
   return (
@@ -77,20 +131,22 @@ export function JoinForm({ roomId, wsUrl }: JoinFormProps) {
 
       <LanguageSelector value={language} onChange={setLanguage} />
 
-      <div className={styles.field}>
-        <label htmlFor={roleId} className={styles.label}>
-          役割
-        </label>
-        <select
-          id={roleId}
-          className={styles.select}
-          value={role}
-          onChange={(event) => setRole(event.target.value as RoomRole)}
-        >
-          <option value="owner">オーナー</option>
-          <option value="guest">ゲスト</option>
-        </select>
-      </div>
+      {!ownerToken && !guestToken && (
+        <div className={styles.field}>
+          <label htmlFor={roleId} className={styles.label}>
+            役割
+          </label>
+          <select
+            id={roleId}
+            className={styles.select}
+            value={role}
+            onChange={(event) => setRole(event.target.value as RoomRole)}
+          >
+            <option value="owner">オーナー</option>
+            <option value="guest">ゲスト</option>
+          </select>
+        </div>
+      )}
 
       <button type="submit" className={styles.submitButton}>
         参加する

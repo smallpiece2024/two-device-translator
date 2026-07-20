@@ -119,13 +119,23 @@ function waitForOpen(ws: WebSocket): Promise<void> {
   });
 }
 
-/** 指定件数のメッセージを受信するまで待ち、受信順に配列で返す */
+/**
+ * 指定件数のメッセージを受信するまで待ち、受信順に配列で返す。
+ *
+ * `active_speaker`（話者調停の確定/解放通知、bd-6h1）は発話活動に伴い
+ * 非同期に割り込むため、このテストの関心事（翻訳・配信ルーティング）から
+ * 除外する（話者調停自体の検証は tests/integration/speaker-arbitration.test.ts）。
+ */
 function collectMessages(ws: WebSocket, count: number): Promise<ServerMessage[]> {
   return new Promise((resolve, reject) => {
     const received: ServerMessage[] = [];
     const onMessage = (data: WebSocket.RawData) => {
       try {
-        received.push(JSON.parse(data.toString("utf8")) as ServerMessage);
+        const message = JSON.parse(data.toString("utf8")) as ServerMessage;
+        if (message.type === "active_speaker") {
+          return;
+        }
+        received.push(message);
         if (received.length >= count) {
           ws.off("message", onMessage);
           resolve(received);
@@ -144,6 +154,12 @@ describe("翻訳・配信ルーティング パイプライン結合テスト（
   let wss: WebSocketServer;
   let clients: WebSocket[] = [];
   let speechStreams: MockRecognizeStream[];
+  // このテストは仮トークン("dummy-token")での join を前提にしている
+  // （招待フロー未実装のため、正規のSupabase/ゲストJWTは発行できない）。
+  // bd-0jy で join 検証が本実装（strict）化されたため、このテストの意図
+  // （翻訳・配信ルーティングの検証）を壊さない最小対応として
+  // AUTH_MODE=insecure を明示する（server/auth/verifyParticipant.ts 参照）。
+  let originalAuthMode: string | undefined;
 
   function getPort(server: WebSocketServer): number {
     const address = server.address();
@@ -160,6 +176,9 @@ describe("翻訳・配信ルーティング パイプライン結合テスト（
   }
 
   beforeEach(async () => {
+    originalAuthMode = process.env.AUTH_MODE;
+    process.env.AUTH_MODE = "insecure";
+
     speechStreams = [createMockRecognizeStream(), createMockRecognizeStream()];
     setSpeechClient(createMockSpeechClient(speechStreams));
     setTranslateClient(
@@ -172,6 +191,12 @@ describe("翻訳・配信ルーティング パイプライン結合テスト（
   });
 
   afterEach((done) => {
+    if (originalAuthMode === undefined) {
+      delete process.env.AUTH_MODE;
+    } else {
+      process.env.AUTH_MODE = originalAuthMode;
+    }
+
     clients.forEach((client) => client.terminate());
     clients = [];
     resetSpeechClient();

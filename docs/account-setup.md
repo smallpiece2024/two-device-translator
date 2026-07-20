@@ -51,14 +51,14 @@
 - [x] ローカル認証: `gcloud auth application-default login` → `gcloud auth application-default set-quota-project <dev-project-id>`
 
 ### 3-2. Supabase（Phase 2 の認証・DB実装までに）
-- [ ] Supabase アカウントを作成する（GitHub ログイン可）
-- [ ] プロジェクト①（prod想定）を作成する ※dev は CLI ローカルを基本とする
-- [ ] GCP で OAuth 同意画面＋クライアントID を作成し、Supabase Auth の Google プロバイダに設定する
-- [ ] `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` を `.env` に設定する（コミットしない）
+- [x] Supabase アカウントを作成する（GitHub ログイン可）
+- [x] プロジェクト①（prod想定）を作成する ※dev は CLI ローカルを基本とする
+- [x] GCP で OAuth 同意画面＋クライアントID を作成し、Supabase Auth の Google プロバイダに設定する
+- [x] `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` を `.env` に設定する（コミットしない）
 
 ### 3-3. Anthropic（Phase 3 の AI 機能までに）
-- [ ] Anthropic アカウント＋APIキーを作成する（dev/prod でキーを分ける）
-- [ ] **月次支出上限を設定する**（dev は低めに）
+- [x] Anthropic アカウント＋APIキーを作成する（dev/prod でキーを分ける）
+- [x] **月次支出上限を設定する**（dev は低めに）
 
 ### 3-4. ドメイン＋GCP prod（初回デプロイまでに）
 - [ ] ドメインを1つ取得する（例: お名前.com / Cloudflare）

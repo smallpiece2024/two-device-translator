@@ -1,0 +1,138 @@
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid #d9d9e0;
+  border-radius: 0.5rem;
+  background-color: #ffffff;
+}
+
+.itemInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.statusBadge {
+  display: inline-flex;
+  align-self: flex-start;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.125rem 0.5rem;
+  border-radius: 999px;
+}
+
+.statusActive {
+  color: #15803d;
+  background-color: #dcfce7;
+}
+
+.statusEnded {
+  color: #6b6b75;
+  background-color: #f0f0f2;
+}
+
+.createdAt {
+  font-size: 0.85rem;
+  color: #6b6b75;
+}
+
+.itemActions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.inviteLink {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0.5rem 1rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #2563eb;
+  background-color: #ffffff;
+  border: 1px solid #2563eb;
+  border-radius: 0.25rem;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.inviteLink:hover {
+  background-color: #eff6ff;
+}
+
+.inviteLink:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.enterLink {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0.5rem 1rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #fff;
+  background-color: #2563eb;
+  border-radius: 0.25rem;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.enterLink:hover {
+  background-color: #1d4ed8;
+}
+
+.enterLink:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 1.5rem;
+  border: 1px dashed #d9d9e0;
+  border-radius: 0.5rem;
+  color: #6b6b75;
+}
+
+.emptyCreateLink {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0.5rem 1rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #fff;
+  background-color: #2563eb;
+  border-radius: 0.25rem;
+  text-decoration: none;
+}
+
+.emptyCreateLink:hover {
+  background-color: #1d4ed8;
+}
+
+.emptyCreateLink:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}

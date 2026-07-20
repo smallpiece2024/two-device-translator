@@ -1,0 +1,163 @@
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  max-width: 480px;
+  margin: 2rem auto;
+  padding: 1.5rem;
+}
+
+.title {
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.tabs {
+  display: flex;
+  gap: 0.5rem;
+  border-bottom: 1px solid #d9d9e0;
+}
+
+.tab {
+  flex: 1;
+  min-height: 44px;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #6b6b75;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: #1c1c20;
+}
+
+.tabActive {
+  color: #2563eb;
+  border-bottom-color: #2563eb;
+}
+
+.tab:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.label {
+  font-size: 0.85rem;
+  color: #6b6b75;
+}
+
+.input {
+  font-size: 1rem;
+  color: #1c1c20;
+  background-color: #ffffff;
+  border: 1px solid #d9d9e0;
+  border-radius: 4px;
+  padding: 0.5rem 0.625rem;
+  min-height: 44px;
+}
+
+.input:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.submitButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0.5rem 1rem;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #fff;
+  background-color: #2563eb;
+  border: 1px solid #2563eb;
+  border-radius: 0.25rem;
+  cursor: pointer;
+}
+
+.submitButton:hover {
+  background-color: #1d4ed8;
+  border-color: #1d4ed8;
+}
+
+.submitButton:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.submitButton:disabled {
+  background-color: #a8bceb;
+  border-color: #a8bceb;
+  cursor: not-allowed;
+}
+
+.divider {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: #6b6b75;
+  font-size: 0.85rem;
+}
+
+.dividerLine {
+  flex: 1;
+  height: 1px;
+  background-color: #d9d9e0;
+}
+
+.googleButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-height: 44px;
+  padding: 0.5rem 1rem;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #1c1c20;
+  background-color: #ffffff;
+  border: 1px solid #d9d9e0;
+  border-radius: 0.25rem;
+  cursor: pointer;
+}
+
+.googleButton:hover {
+  background-color: #f4f4f6;
+}
+
+.googleButton:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.googleButton:disabled {
+  color: #a0a0a8;
+  cursor: not-allowed;
+}
+
+.error {
+  font-size: 0.85rem;
+  color: #c0392b;
+  border: 1px solid #c0392b;
+  border-radius: 0.25rem;
+  padding: 0.5rem 0.625rem;
+}
+
+.notice {
+  font-size: 0.85rem;
+  color: #15803d;
+  border: 1px solid #15803d;
+  border-radius: 0.25rem;
+  padding: 0.5rem 0.625rem;
+}

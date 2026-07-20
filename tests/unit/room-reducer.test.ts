@@ -394,19 +394,85 @@ describe("roomReducer", () => {
       expect(state.participants).toEqual([participantA]);
     });
 
-    it("PARTICIPANT_UPDATED で該当participantを新しい内容に置き換える", () => {
-      const withA = roomReducer(initialRoomState, {
-        type: "PARTICIPANT_JOINED",
-        participant: participantA,
+    /**
+     * bd-fki: `participant_updated` のペイロードは `participantId`/`language`/
+     * `displayName`(optional) のみ（role/present を含まない）ため、reducer 側は
+     * 該当participantへ**マージ**する（role/present は既存値を維持、
+     * `displayName` 省略時も既存値を維持、`docs/design/websocket-protocol.md`
+     * `participant_updated` 節参照）。
+     */
+    describe("PARTICIPANT_UPDATED（bd-fki: マージ方式）", () => {
+      it("language を更新しつつ role/present は既存値を維持する", () => {
+        const withA = roomReducer(initialRoomState, {
+          type: "PARTICIPANT_JOINED",
+          participant: participantA,
+        });
+
+        const state = roomReducer(withA, {
+          type: "PARTICIPANT_UPDATED",
+          participantId: "p1",
+          language: "en-US",
+          displayName: "たろう",
+        });
+
+        expect(state.participants).toEqual([
+          { ...participantA, language: "en-US", displayName: "たろう" },
+        ]);
       });
 
-      const updatedA = { ...participantA, language: "en-US" };
-      const state = roomReducer(withA, {
-        type: "PARTICIPANT_UPDATED",
-        participant: updatedA,
+      it("displayName 省略時は既存の displayName を維持する", () => {
+        const participantWithName = { ...participantA, displayName: "元の名前" };
+        const withA = roomReducer(initialRoomState, {
+          type: "PARTICIPANT_JOINED",
+          participant: participantWithName,
+        });
+
+        const state = roomReducer(withA, {
+          type: "PARTICIPANT_UPDATED",
+          participantId: "p1",
+          language: "en-US",
+        });
+
+        expect(state.participants).toEqual([
+          { ...participantWithName, language: "en-US" },
+        ]);
       });
 
-      expect(state.participants).toEqual([updatedA]);
+      it("該当participantIdが存在しない場合は participants を変更しない", () => {
+        const withA = roomReducer(initialRoomState, {
+          type: "PARTICIPANT_JOINED",
+          participant: participantA,
+        });
+
+        const state = roomReducer(withA, {
+          type: "PARTICIPANT_UPDATED",
+          participantId: "unknown",
+          language: "en-US",
+        });
+
+        expect(state.participants).toEqual([participantA]);
+      });
+
+      it("複数参加者中、該当participantのみを更新し他は変更しない", () => {
+        const withBoth = roomReducer(
+          roomReducer(initialRoomState, {
+            type: "PARTICIPANT_JOINED",
+            participant: participantA,
+          }),
+          { type: "PARTICIPANT_JOINED", participant: participantB },
+        );
+
+        const state = roomReducer(withBoth, {
+          type: "PARTICIPANT_UPDATED",
+          participantId: "p2",
+          language: "ja-JP",
+        });
+
+        expect(state.participants).toEqual([
+          participantA,
+          { ...participantB, language: "ja-JP" },
+        ]);
+      });
     });
 
     it("IDLE_HINT で idleHint を true にする", () => {
@@ -433,6 +499,78 @@ describe("roomReducer", () => {
     it("ROOM_ENDED で roomEnded を true にする", () => {
       const state = roomReducer(initialRoomState, { type: "ROOM_ENDED" });
       expect(state.roomEnded).toBe(true);
+    });
+
+    /**
+     * two-device-translator-4xi: room_ended（オーナー終了／不在自動終了）
+     * ハンドリング。reason（"owner_ended" | "auto_timeout"）は endedReason に
+     * 保持され、reason省略時は既存値を維持する。ROOM_ENDED は messages を
+     * 変更しない（終了バナー表示後も会話履歴は表示され続ける想定）。
+     */
+    describe("ROOM_ENDED の reason ハンドリング（two-device-translator-4xi）", () => {
+      it("reason省略時は endedReason を変更しない（既存値を維持する）", () => {
+        const state = roomReducer(initialRoomState, { type: "ROOM_ENDED" });
+        expect(state.roomEnded).toBe(true);
+        expect(state.endedReason).toBeNull();
+      });
+
+      it("reason: owner_ended を渡すと endedReason に反映される", () => {
+        const state = roomReducer(initialRoomState, {
+          type: "ROOM_ENDED",
+          reason: "owner_ended",
+        });
+        expect(state.roomEnded).toBe(true);
+        expect(state.endedReason).toBe("owner_ended");
+      });
+
+      it("reason: auto_timeout を渡すと endedReason に反映される", () => {
+        const state = roomReducer(initialRoomState, {
+          type: "ROOM_ENDED",
+          reason: "auto_timeout",
+        });
+        expect(state.roomEnded).toBe(true);
+        expect(state.endedReason).toBe("auto_timeout");
+      });
+
+      it("既に endedReason が設定済みの状態で reason省略の ROOM_ENDED を受けても上書きしない", () => {
+        const alreadyEnded = roomReducer(initialRoomState, {
+          type: "ROOM_ENDED",
+          reason: "owner_ended",
+        });
+
+        const state = roomReducer(alreadyEnded, { type: "ROOM_ENDED" });
+
+        expect(state.endedReason).toBe("owner_ended");
+      });
+
+      it("messages を変更しない（会話履歴は維持される）", () => {
+        const withMessages: RoomState = {
+          ...initialRoomState,
+          status: "joined",
+          messages: [
+            {
+              messageId: "m1",
+              speakerParticipantId: "p1",
+              speakerName: "Alice",
+              sourceLanguage: "ja-JP",
+              originalText: "こんにちは",
+              displayText: "こんにちは",
+              displayLanguage: "ja-JP",
+              isOwnMessage: true,
+              createdAt: "2026-07-04T00:00:00.000Z",
+            },
+          ],
+        };
+
+        const state = roomReducer(withMessages, {
+          type: "ROOM_ENDED",
+          reason: "owner_ended",
+        });
+
+        expect(state.messages).toEqual(withMessages.messages);
+        expect(state.roomEnded).toBe(true);
+        expect(state.endedReason).toBe("owner_ended");
+      });
     });
 
     it("未知のアクション（default分岐）では状態を変更しない", () => {

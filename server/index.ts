@@ -1,12 +1,24 @@
 import { WebSocketServer, WebSocket, RawData } from "ws";
 import {
   SHARED_PLACEHOLDER,
+  WS_CLOSE_CODE_SUPERSEDED,
   clientMessageSchema,
   type ServerMessage,
+  type RoomEndedReason,
 } from "@shared/index";
-import { RoomManager, type Room } from "./room/roomManager";
+import {
+  RoomManager,
+  type Room,
+  DEFAULT_AUTO_END_THRESHOLD_MS,
+  DEFAULT_ENDED_ROOM_TTL_MS,
+} from "./room/roomManager";
 import type { Session, CreateSpeechStreamFn } from "./room/session";
-import { verifyJoin as defaultVerifyJoin, type VerifyJoinFn } from "./auth/verifyParticipant";
+import { SpeakerArbitrator } from "./room/speakerArbitration";
+import {
+  verifyJoin as defaultVerifyJoin,
+  isInsecureAuthMode,
+  type VerifyJoinFn,
+} from "./auth/verifyParticipant";
 import { translateText } from "./gcp/translate";
 import { synthesizeSpeechToBase64 } from "./gcp/textToSpeech";
 import {
@@ -15,16 +27,36 @@ import {
   mockSynthesizeSpeechToBase64,
 } from "./gcp/mockGcp";
 import { routeUtterance, type RoutingParticipant, type MessageRouterDeps } from "./routing/messageRouter";
+import { markRoomEnded, markRoomActive } from "./db/supabaseAdmin";
 
 const WS_PORT = parseInt(process.env.WS_PORT ?? "3001", 10);
 const WS_HOST = "127.0.0.1";
 
 /** `startServer` の挙動を差し替えるためのオプション（テスト・Phase2差し替え用） */
 export interface StartServerOptions {
-  /** join 検証ロジック（既定は Phase1 ダミー実装。Phase2 で Supabase/ゲストJWT検証へ差し替え） */
+  /**
+   * join 検証ロジック（既定は `server/auth/verifyParticipant.ts` の本実装。
+   * Supabase アクセストークン(owner)/ゲストJWT(guest)を検証する非同期関数。
+   * テスト・`AUTH_MODE=insecure` 相当の差し替えに使う）。
+   */
   verifyJoin?: VerifyJoinFn;
   /** 1ルームあたりの最大参加者数（既定2） */
   maxParticipants?: number;
+  /**
+   * 不在自動終了のしきい値（ms）。省略時は環境変数 `AUTO_END_THRESHOLD_MS`
+   * → 既定値（`RoomManager.DEFAULT_AUTO_END_THRESHOLD_MS`、10分）の順で解決する
+   * （bd-e3p、docs/design/server-design.md「再接続・不在・終了判定」参照）。
+   * テスト用に短い値へ差し替え可能。
+   */
+  autoEndThresholdMs?: number;
+  /**
+   * ended ルームの TTL（ms）。省略時は環境変数 `ENDED_ROOM_TTL_MS`
+   * → 既定値（`RoomManager.DEFAULT_ENDED_ROOM_TTL_MS`、30分）の順で解決する
+   * （bd-gz1、docs/design/server-design.md
+   * 「実装確定事項（bd-gz1 で追加: endedルームの再開）」参照）。
+   * テスト用に短い値へ差し替え可能。
+   */
+  endedRoomTtlMs?: number;
   /**
    * STT ストリーム生成関数（省略時は `GCP_MODE` 環境変数で解決。
    * `GCP_MODE=mock` のときは E2E 用モック、それ以外は実 GCP 実装）。
@@ -45,6 +77,44 @@ export interface StartServerOptions {
 /** `GCP_MODE=mock` のとき true（E2E テスト用の決定的モックで動作させる）。 */
 function isMockGcpMode(): boolean {
   return process.env.GCP_MODE === "mock";
+}
+
+/**
+ * 不在自動終了のしきい値（ms）を解決する。
+ * 優先順位: `options.autoEndThresholdMs` 明示指定 > 環境変数
+ * `AUTO_END_THRESHOLD_MS`（正の整数のみ有効） > 既定値（10分）。
+ */
+function resolveAutoEndThresholdMs(explicit?: number): number {
+  if (explicit !== undefined) {
+    return explicit;
+  }
+  const envValue = process.env.AUTO_END_THRESHOLD_MS;
+  if (envValue) {
+    const parsed = parseInt(envValue, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return DEFAULT_AUTO_END_THRESHOLD_MS;
+}
+
+/**
+ * ended ルームの TTL（ms）を解決する（bd-gz1）。
+ * 優先順位: `options.endedRoomTtlMs` 明示指定 > 環境変数
+ * `ENDED_ROOM_TTL_MS`（正の整数のみ有効） > 既定値（30分）。
+ */
+function resolveEndedRoomTtlMs(explicit?: number): number {
+  if (explicit !== undefined) {
+    return explicit;
+  }
+  const envValue = process.env.ENDED_ROOM_TTL_MS;
+  if (envValue) {
+    const parsed = parseInt(envValue, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return DEFAULT_ENDED_ROOM_TTL_MS;
 }
 
 /** `Session` から `messageRouter.ts` の `RoutingParticipant` へ変換する */
@@ -90,6 +160,46 @@ function routeCommittedUtterance(
 }
 
 /**
+ * 参加者の現在の displayName/language を、ルーム内の全参加者
+ * （本人含む）へ `participant_updated` として配信する共通処理。
+ *
+ * 発火契機は (1) 言語検出モード（FR-4.3・D-9）での言語確定、(2)
+ * `update_settings`（bd-fki）での明示的な language/displayName 変更の2つ
+ * （docs/design/websocket-protocol.md「参加者イベント」「`participant_updated`
+ * の配信範囲（bd-ecb で確定）」参照）。ルームが既に存在しない場合は何もしない。
+ */
+function broadcastParticipantUpdated(room: Room, targetSession: Session): void {
+  for (const participant of room.participants.values()) {
+    participant.send({
+      type: "participant_updated",
+      participantId: targetSession.participantId,
+      displayName: targetSession.displayName,
+      language: targetSession.language,
+    });
+  }
+}
+
+/**
+ * ルーム終了（オーナーの `request_end` / 不在自動終了の両方）の共通処理。
+ * `roomManager.endRoom()` 実行後に呼ぶこと（この関数自身は状態遷移を行わない）。
+ *
+ * - 全参加者へ `room_ended` を配信する
+ * - 各参加者の録音セッション（STTストリーム等）を破棄する
+ * - 各参加者のソケットを閉じる（`room_ended` 送信後、確実に届くよう非同期を待たない）
+ * - DB `rooms.status`/`ended_at` を更新する（service_role、fire-and-forget。
+ *   失敗しても接続終了処理は止めない、docs/design/server-design.md
+ *   「ルーム終了シーケンス」参照）
+ */
+function finalizeRoomEnd(room: Room, reason: RoomEndedReason): void {
+  for (const participant of room.participants.values()) {
+    participant.send({ type: "room_ended", reason });
+    participant.destroyRecording();
+    participant.closeSocket(1000, `room ${reason}`);
+  }
+  void markRoomEnded(room.roomId);
+}
+
+/**
  * WebSocketServer を起動して返す。
  * テスト容易性のため関数として切り出す（index.ts から export）。
  *
@@ -110,7 +220,49 @@ export function startServer(
   options: StartServerOptions = {},
 ): WebSocketServer {
   const wss = new WebSocketServer({ port, host });
-  const roomManager = new RoomManager({ maxParticipants: options.maxParticipants });
+
+  // 話者調停器（話者交代制、bd-6h1）: ルームIDごとに1つ。録音セッションの
+  // STT結果到着を契機に「一度に話者は1人」を調停し、確定/解放を
+  // `active_speaker` として全参加者へ配信する。ルーム終了時に破棄する。
+  const arbitrators = new Map<string, SpeakerArbitrator>();
+
+  const getArbitrator = (roomId: string): SpeakerArbitrator => {
+    const existing = arbitrators.get(roomId);
+    if (existing) {
+      return existing;
+    }
+    const arbitrator = new SpeakerArbitrator({
+      onActiveSpeakerChange: (participantId) => {
+        const room = roomManager.getRoom(roomId);
+        if (!room) {
+          return;
+        }
+        for (const participant of room.participants.values()) {
+          participant.send({ type: "active_speaker", participantId });
+        }
+      },
+    });
+    arbitrators.set(roomId, arbitrator);
+    return arbitrator;
+  };
+
+  const disposeArbitrator = (roomId: string): void => {
+    const arbitrator = arbitrators.get(roomId);
+    if (arbitrator) {
+      arbitrator.dispose();
+      arbitrators.delete(roomId);
+    }
+  };
+
+  const roomManager = new RoomManager({
+    maxParticipants: options.maxParticipants,
+    autoEndThresholdMs: resolveAutoEndThresholdMs(options.autoEndThresholdMs),
+    endedRoomTtlMs: resolveEndedRoomTtlMs(options.endedRoomTtlMs),
+    onAutoEnd: (room) => {
+      finalizeRoomEnd(room, "auto_timeout");
+      disposeArbitrator(room.roomId);
+    },
+  });
   const verifyJoin = options.verifyJoin ?? defaultVerifyJoin;
   const mockMode = isMockGcpMode();
 
@@ -134,6 +286,12 @@ export function startServer(
           "(server/gcp/mockGcp.ts). Do NOT use this in production.",
       );
     }
+    if (isInsecureAuthMode()) {
+      console.warn(
+        "[WS Server] AUTH_MODE=insecure: join token verification is DISABLED " +
+          "(server/auth/verifyParticipant.ts). 本番使用禁止 (do NOT use this in production).",
+      );
+    }
   });
 
   wss.on("connection", (ws: WebSocket) => {
@@ -142,6 +300,11 @@ export function startServer(
     // join 完了後にのみ非 null になる（それまでは join 待ち状態）
     let session: Session | null = null;
     let roomId: string | null = null;
+    // join 検証（Supabase/ゲストJWT検証は非同期）が完了するまでの間、
+    // 後続の join メッセージの多重処理を防ぐガード
+    // （検証中に他メッセージが届いた場合は session が null のままのため、
+    // 既存の「join required」エラー経路に自然に落ちる）。
+    let joinInProgress = false;
 
     const sendMessage = (message: ServerMessage): void => {
       if (ws.readyState !== ws.OPEN) {
@@ -191,43 +354,111 @@ export function startServer(
           return;
         }
 
-        const identity = verifyJoin(message);
-        if (!identity) {
-          sendError("Authentication failed", true);
+        // 検証中（非同期）に届いた追加の join は多重処理せず拒否する
+        // （fatal:false。最初の join の検証結果を待たせる）
+        if (joinInProgress) {
+          sendError("join is already being verified", false);
           return;
         }
+        joinInProgress = true;
 
-        const joinResult = roomManager.join(message.roomId, identity, ws, {
-          enableTts: message.enableTts,
-        });
-        if (!joinResult.ok) {
-          sendError(joinResult.reason, false);
-          return;
-        }
+        void (async () => {
+          try {
+            const identity = await verifyJoin(message);
+            if (!identity) {
+              sendError("Authentication failed", true);
+              return;
+            }
 
-        session = joinResult.session;
-        roomId = message.roomId;
+            // 検証待ち中の切断との競合対策: verifyJoin の await 中にクライアントが
+            // 切断すると、close イベントは session=null のためクリーンアップ処理を
+            // 素通りして先に発火してしまう（除去経路がない = close は再発火しない）。
+            // ここでチェックせずに roomManager.join を呼ぶと、切断済みソケットの
+            // セッションがルームに残り続け、maxParticipants の枠を永久に占有する
+            // 「幽霊参加者」バグになる。以降は同期処理のみのため、この1箇所の
+            // readyState チェックで十分。
+            if (ws.readyState !== ws.OPEN) {
+              return;
+            }
 
-        // 既に在室している他参加者へ、新規参加を通知する
-        // （新規参加者自身への joined 応答より先に送ることで、他参加者側での
-        // 受信順序に関するテスト時のレース（同時刻に別ソケットへ送信した際の
-        // 到達順不定）の影響を抑える）
-        for (const other of joinResult.room.participants.values()) {
-          if (other.participantId === session.participantId) {
-            continue;
+            const joinResult = roomManager.join(message.roomId, identity, ws, {
+              enableTts: message.enableTts,
+            });
+            if (!joinResult.ok) {
+              // ルームが既に終了済みの場合は error ではなく room_ended を
+              // 返してから接続を閉じる（must-fix1、コードレビュー指摘対応。
+              // docs/design/server-design.md「再接続復帰」参照）。
+              if (joinResult.endedReason) {
+                sendMessage({ type: "room_ended", reason: joinResult.endedReason });
+                ws.close(1000, "room already ended");
+                return;
+              }
+              sendError(joinResult.reason, false);
+              return;
+            }
+
+            session = joinResult.session;
+            roomId = message.roomId;
+
+            // ended ルームの再開（FR-12.3、bd-gz1）: 検証済みオーナーの再joinで
+            // ルームを active に戻した場合、DB `rooms.status` も 'active' に
+            // 戻す（fire-and-forget。会話開始を待たせない、NFR-2.2 と同じ方針）。
+            // サーバー再起動後（メモリに Room がない）のオーナー再joinは
+            // `joinResult.reopened=false`（新規作成パス）だが、その場合も
+            // DB が ended のままだと再開できないため、オーナーの join 成功時は
+            // 常に markRoomActive を呼ぶ（既に active な行への更新は無害。
+            // docs/design/server-design.md「実装確定事項（bd-gz1 で追加:
+            // endedルームの再開）」参照）。
+            if (session.role === "owner") {
+              void markRoomActive(roomId);
+            }
+
+            // 再接続復帰: 同一 participantId の古い接続がまだ開いていた場合、
+            // 新しい接続を正としてそちらを閉じる（二重接続の設計判断、
+            // docs/design/server-design.md「再接続・不在・終了判定」参照）。
+            // 古い接続の close ハンドラは isCurrentSocket() ガードにより、
+            // 既に差し替え済みの session の present/録音状態を壊さない。
+            if (
+              joinResult.reconnected &&
+              joinResult.previousSocket &&
+              joinResult.previousSocket !== ws &&
+              joinResult.previousSocket.readyState === joinResult.previousSocket.OPEN
+            ) {
+              joinResult.previousSocket.close(
+                WS_CLOSE_CODE_SUPERSEDED,
+                "reconnected from a new connection"
+              );
+            }
+
+            // 既に在室している他参加者へ、新規参加/再接続を通知する
+            // （新規参加者自身への joined 応答より先に送ることで、他参加者側での
+            // 受信順序に関するテスト時のレース（同時刻に別ソケットへ送信した際の
+            // 到達順不定）の影響を抑える）。再接続時も participant_joined を
+            // 再送する（server-design.md「再接続復帰」参照）。
+            for (const other of joinResult.room.participants.values()) {
+              if (other.participantId === session.participantId) {
+                continue;
+              }
+              other.send({ type: "participant_joined", participant: session.toSummary() });
+            }
+
+            sendMessage({
+              type: "joined",
+              participantId: joinResult.session.participantId,
+              room: { id: joinResult.room.roomId, status: joinResult.room.status },
+              participants: Array.from(joinResult.room.participants.values()).map(
+                (s) => s.toSummary(),
+              ),
+              recentMessages: [],
+            });
+          } catch (err) {
+            const errMessage = err instanceof Error ? err.message : String(err);
+            console.error("[WS Server] join verification failed unexpectedly:", errMessage);
+            sendError("Authentication failed", true);
+          } finally {
+            joinInProgress = false;
           }
-          other.send({ type: "participant_joined", participant: session.toSummary() });
-        }
-
-        sendMessage({
-          type: "joined",
-          participantId: joinResult.session.participantId,
-          room: { id: joinResult.room.roomId, status: joinResult.room.status },
-          participants: Array.from(joinResult.room.participants.values()).map(
-            (s) => s.toSummary(),
-          ),
-          recentMessages: [],
-        });
+        })();
         return;
       }
 
@@ -235,13 +466,129 @@ export function startServer(
       switch (message.type) {
         case "update_settings": {
           session.enableTts = message.enableTts;
+
+          // language/displayName は bd-fki で追加した Phase2 拡張（任意項目）。
+          // 指定がなければ変更しない。録音中の言語変更は STT ストリームを
+          // 張り替えず、次の `start` から反映する（プロトタイプ方針を継承、
+          // docs/design/websocket-protocol.md「update_settings（設定変更）」参照）。
+          // ここで更新した `session.language` は、次回発話の翻訳ルーティング
+          // （`toRoutingParticipant` 経由で聞き手の言語として参照される）には
+          // 即座に反映される。
+          let changed = false;
+
+          // 録音中（`session.isRecording`）は language の変更を無視する
+          // （コードレビュー should-fix）。FE は録音中 UI を disabled にする想定だが、
+          // 逸脱クライアント（改造クライアント・実装バグ等）が録音中に language を
+          // 送ってきた場合、STT は旧言語のまま認識を継続するにもかかわらず
+          // `session.language` だけが新言語に切り替わってしまうと、直後に確定する
+          // 発話（旧言語で認識済みのテキスト）が新言語を sourceLanguage として
+          // 誤翻訳される事故になり得る。サーバー側でも防御し、変更は次の
+          // `start`（STT再起動）まで据え置く。エラー応答は不要（黙って無視する）。
+          if (message.language !== undefined && message.language !== session.language) {
+            if (session.isRecording) {
+              console.warn(
+                `[WS Server] update_settings: ignoring language change during recording (participantId=${session.participantId})`,
+              );
+            } else {
+              session.language = message.language;
+              changed = true;
+            }
+          }
+
+          // displayName が trim 後に空文字の場合は「変更なし」として無視する
+          // （コードレビュー should-fix）。参加後に表示名を空文字へ変更できてしまうと
+          // タイムライン等の話者表示が崩れるため、空文字は許可しない
+          // （「空にしたい」という仕様要件は現状ない。フォーム側のバリデーションのみに
+          // 頼らずサーバー側でも防御する）。
+          if (
+            message.displayName !== undefined &&
+            message.displayName.trim().length > 0 &&
+            message.displayName !== session.displayName
+          ) {
+            session.displayName = message.displayName;
+            changed = true;
+          }
+
+          // 変更があった場合のみ、本人を含む全参加者へ participant_updated を
+          // 配信する（`participant_joined`/`participant_left` と異なり、本人にも
+          // 送る設計判断。docs/design/websocket-protocol.md「参加者イベント」
+          // 「`participant_updated` の配信範囲（bd-ecb で確定）」参照）。
+          //
+          // DB（`participants.display_name`/`language`）は更新しない: bd-e3p の
+          // `verifyParticipant.ts` と同じ方針（このファイルの
+          // `resolveOwnerParticipantId`/`verifyGuestJoin` のコメント参照）で、
+          // これらは接続のたびに変わりうる値としてメモリ状態のみを正とする。
+          // db-design.md/supabase-design.md にも「設定変更時の participants 行
+          // 更新」の定義は無く、現時点で永続化が必要という要件もないため、
+          // 過剰実装を避けメモリ更新のみに留める（bd-fki 実装時点の判断。
+          // 必要になれば別タスクで追加する）。
+          if (changed && roomId) {
+            const room = roomManager.getRoom(roomId);
+            if (room) {
+              broadcastParticipantUpdated(room, session);
+            }
+          }
+          return;
+        }
+
+        case "playback_state": {
+          // 相互半二重化（bd-rwi）: 自デバイスのTTS再生状態を同室の**他**参加者へ
+          // 中継する。受信側は相手の再生中に自分のマイク送信を抑止し、対面利用で
+          // 相手端末のスピーカー音を拾う音響フィードバックループを防ぐ。
+          // 状態は永続化せずリアルタイム中継のみ（update_settings と同様、
+          // メモリにも保持しない: 切断時は participant_left でクライアント側が
+          // クリアする契約）。
+          if (!roomId) {
+            return;
+          }
+          const room = roomManager.getRoom(roomId);
+          if (!room) {
+            return;
+          }
+          for (const participant of room.participants.values()) {
+            if (participant.participantId === session.participantId) {
+              continue;
+            }
+            participant.send({
+              type: "peer_playback_state",
+              participantId: session.participantId,
+              playing: message.playing,
+            });
+          }
           return;
         }
 
         case "start": {
           session.startRecording(message, {
             createSpeechStream: createStream,
+            onSpeechActivity: () => {
+              // 話者調停（bd-6h1）: STT結果の採否を判定する。
+              // ルーム喪失・終了後は調停せず採用（従来動作の維持。終了済み
+              // roomId で getArbitrator すると破棄済み調停器が再生成されて
+              // Map に残留するため、active なルームがある場合のみ調停する。
+              // コードレビュー should-fix1）。
+              if (!roomId || !session) {
+                return true;
+              }
+              const room = roomManager.getRoom(roomId);
+              if (!room || room.status !== "active") {
+                return true;
+              }
+              return getArbitrator(roomId).onSpeechActivity(session.participantId);
+            },
             onUtteranceCommitted: (utteranceText) => {
+              if (!roomId || !session) {
+                return;
+              }
+              // 発話区切りの確定で話者を解放する（次の発話で再調停する）
+              getArbitrator(roomId).onUtteranceCommitted(session.participantId);
+              const room = roomManager.getRoom(roomId);
+              if (!room) {
+                return;
+              }
+              routeCommittedUtterance(room, session, utteranceText, routerDeps);
+            },
+            onLanguageDetected: () => {
               if (!roomId || !session) {
                 return;
               }
@@ -249,7 +596,7 @@ export function startServer(
               if (!room) {
                 return;
               }
-              routeCommittedUtterance(room, session, utteranceText, routerDeps);
+              broadcastParticipantUpdated(room, session);
             },
           });
           return;
@@ -279,11 +626,52 @@ export function startServer(
             return;
           }
           session.stopRecording();
+          // 録音終了: 当人が話者なら解放する（stopRecording 内の残バッファ確定で
+          // onUtteranceCommitted 経由の解放が先に走ることもあるが、二重解放は無害）
+          if (roomId) {
+            arbitrators.get(roomId)?.onStop(session.participantId);
+          }
+          return;
+        }
+
+        case "audio_level": {
+          // 話者調停（bd-6h1）: 参加者の直近マイク入力レベルを記録する。
+          // 永続化せずメモリのみ（playback_state と同方針）。
+          // - 録音中のみ受け付ける（未録音の参加者のレベルが調停の比較対象に
+          //   混入して話者を誤って拒否しないよう、サーバー側でも前提を強制する。
+          //   コードレビュー should-fix2）
+          // - active なルームがある場合のみ調停器に触る（終了直後の残メッセージで
+          //   破棄済み調停器が再生成・残留しないようにする。should-fix1）
+          if (!roomId || !session.isRecording) {
+            return;
+          }
+          const room = roomManager.getRoom(roomId);
+          if (!room || room.status !== "active") {
+            return;
+          }
+          getArbitrator(roomId).onLevel(session.participantId, message.level);
+          return;
+        }
+
+        case "request_end": {
+          // オーナーのみ有効（websocket-protocol.md「request_end（ルーム終了）」参照）。
+          if (session.role !== "owner") {
+            sendError("only the room owner can end the room", false);
+            return;
+          }
+          if (!roomId) {
+            return;
+          }
+          const ended = roomManager.endRoom(roomId, "owner_ended");
+          if (ended) {
+            finalizeRoomEnd(ended, "owner_ended");
+            disposeArbitrator(roomId);
+          }
           return;
         }
 
         default:
-          // update_settings / request_end 等の Phase2/3 メッセージは別タスクで扱う
+          // idle_hint 等の Phase3 メッセージは別タスクで扱う
           console.log(
             `[WS Server] Received message (not handled in this phase): ${message.type}`,
           );
@@ -295,16 +683,42 @@ export function startServer(
       console.log(
         `[WS Server] Client disconnected (code=${code}, reason=${reason.toString()})`,
       );
-      if (session) {
-        session.destroyRecording();
+
+      if (!session) {
+        return;
       }
-      if (session && roomId) {
+
+      // 再接続により差し替え済みの「古い」物理接続の close イベント。
+      // 新しい接続が正であり、こちらの close で present/録音状態を
+      // 上書きしてはならない（server/room/session.ts の isCurrentSocket 参照）。
+      if (!session.isCurrentSocket(ws)) {
+        return;
+      }
+
+      session.destroyRecording();
+
+      if (roomId) {
         const room = roomManager.getRoom(roomId);
         const leftParticipantId = session.participantId;
+        // 話者調停: 切断者が話者ならこの時点で解放する（レベル記録も破棄）
+        arbitrators.get(roomId)?.onLeave(leftParticipantId);
+        // ルームが既に終了済み（request_end/自動終了で room_ended 配信済み）の
+        // 場合は、finalizeRoomEnd 側で全参加者へ通知済みのため participant_left
+        // を重ねて送らない（wasEnded は leave() 呼び出し前の状態で判定する。
+        // leave() 自体は status を変更しないため前後どちらで見ても同じだが、
+        // 意図を明確にするため呼び出し前の状態を見る）。
+        const wasEnded = room?.status === "ended";
         roomManager.leave(roomId, leftParticipantId);
-        if (room) {
+        if (room && !wasEnded) {
           for (const other of room.participants.values()) {
-            other.send({ type: "participant_left", participantId: leftParticipantId });
+            if (other.participantId === leftParticipantId) {
+              continue;
+            }
+            other.send({
+              type: "participant_left",
+              participantId: leftParticipantId,
+              reason: "disconnected",
+            });
           }
         }
       }

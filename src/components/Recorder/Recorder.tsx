@@ -13,7 +13,8 @@
  *   しきい値設定を含む）。
  * - 停止: `stop` 送信 → MediaRecorder 停止・トラック解放。
  * - 手動で発話を区切る: `commit` 送信。
- * - 言語検出モードトグル（FR-4.3）は Phase2 のため UI のみ用意し disabled にする。
+ * - 言語検出モードトグル（FR-4.3）は `SettingsPanel` が担当し、本コンポーネントは
+ *   `detectLanguage` prop を受け取って `start` に反映するのみ（bd-fki で移管）。
  *
  * このコンポーネントは RoomClient への結線を行わない（並行タスクとの衝突防止）。
  * 呼び出し側が `sendMessage` で WS 送信を担い、`disabled` で外部状態（未接続等）
@@ -22,6 +23,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ClientMessage, SupportedLanguage } from "@shared/index";
 import { blobToBase64, getSupportedMimeType } from "./audioEncoding";
+import { createAudioPipeline, type AudioPipeline } from "./audioPipeline";
 import styles from "./Recorder.module.css";
 
 /** 発話区切りしきい値の既定値（docs/design/websocket-protocol.md `start`節） */
@@ -29,6 +31,9 @@ export const DEFAULT_CHUNK_MS = 250;
 export const DEFAULT_SILENCE_MS = 1000;
 export const DEFAULT_MAX_CHARS = 80;
 export const DEFAULT_MAX_SECONDS = 10;
+
+/** 入力レベル（`onAudioLevel`）の通知間隔（ms）。話者交代制の判定材料（bd-1or） */
+export const AUDIO_LEVEL_INTERVAL_MS = 200;
 
 /** 録音操作の内部状態 */
 export type RecorderStatus = "idle" | "starting" | "recording" | "error";
@@ -45,6 +50,12 @@ export interface RecorderProps {
   disabled?: boolean;
   /** 自分が聞き手として TTS を受け取るか（`start.enableTts`）。既定 true */
   enableTts?: boolean;
+  /**
+   * 言語検出モード（FR-4.3、`start.detectLanguage`）。トグルUIは
+   * `SettingsPanel` が担い、本コンポーネントは値を受け取って次の `start` に
+   * 反映するのみ。既定 false。
+   */
+  detectLanguage?: boolean;
   /** 録音チャンク送信間隔（ms）。既定 `DEFAULT_CHUNK_MS` */
   chunkMs?: number;
   /** 発話区切り: 無音しきい値（ms）。既定 `DEFAULT_SILENCE_MS` */
@@ -54,12 +65,38 @@ export interface RecorderProps {
   /** 発話区切り: 最大秒数。既定 `DEFAULT_MAX_SECONDS` */
   maxSeconds?: number;
   /**
+   * true の間、録音中であれば強制的に停止する（ルーム終了時など、呼び出し側が
+   * 能動的に録音を打ち切りたい場合に使う）。`disabled` は開始操作のみを抑止する
+   * ため、既に録音中のセッションを止めるにはこのフラグを使う
+   * （`docs/design/frontend-design.md` room_ended ハンドリング節）。既定 false。
+   */
+  forceStop?: boolean;
+  /**
    * 録音の内部状態（`RecorderStatus`）が変化するたびに呼ばれるコールバック。
    * 呼び出し側（RoomClient）が録音開始/停止をアプリ全体の状態（`AppStatus`）に
    * 連動させるためのフック。結線は呼び出し側の責務とし、本コンポーネントは
    * 自身の状態変化を通知するのみ。
    */
   onStatusChange?: (status: RecorderStatus) => void;
+  /**
+   * true の間、マイク入力を一時ミュートする（半二重制御: TTS再生中や
+   * 他者の発話中の音響フィードバック/クロストーク防止）。
+   * bd-1or で GainNode のゲイン0方式に変更（WebAudio 不可時は従来の
+   * `track.enabled=false` にフォールバック）。ゲイン0ならエンコーダが無音の
+   * 実データを出し続けるため、録音・チャンク送信が継続しサーバー側の
+   * STTストリームが途切れない（トラック無効化はモバイルでサイズ0チャンクとなり
+   * Audio Timeout を招いた。送信を止める方式も同様の理由で不採用）。
+   * 既定 false。
+   */
+  muted?: boolean;
+  /**
+   * 録音中、マイクの入力レベル（ゲイン適用前の RMS、0..1）を約
+   * {@link AUDIO_LEVEL_INTERVAL_MS} 間隔で通知するコールバック（bd-1or）。
+   * 話者交代制（生声クロストーク対策）の判定材料として、呼び出し側
+   * （RoomClient）が `audio_level` メッセージとしてサーバーへ送る。
+   * WebAudio が使えない環境では通知されない。
+   */
+  onAudioLevel?: (level: number) => void;
 }
 
 /**
@@ -73,19 +110,25 @@ export function Recorder({
   sendMessage,
   disabled = false,
   enableTts = true,
+  detectLanguage = false,
   chunkMs = DEFAULT_CHUNK_MS,
   silenceMs = DEFAULT_SILENCE_MS,
   maxChars = DEFAULT_MAX_CHARS,
   maxSeconds = DEFAULT_MAX_SECONDS,
+  forceStop = false,
   onStatusChange,
+  muted = false,
+  onAudioLevel,
 }: RecorderProps) {
   const [status, setStatus] = useState<RecorderStatus>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  /** 言語検出モードトグル（Phase2 のため UI のみ・常に false で送信） */
-  const [detectLanguage, setDetectLanguage] = useState(false);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  /** WebAudio パイプライン（ゲイン方式ミュート・レベル測定。bd-1or） */
+  const pipelineRef = useRef<AudioPipeline | null>(null);
+  /** 入力レベルの定期通知タイマー（録音中のみ稼働） */
+  const levelIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isUnmountedRef = useRef(false);
   /**
    * 開始処理の多重実行防止用フラグ。
@@ -106,6 +149,20 @@ export function Recorder({
     onStatusChangeRef.current = onStatusChange;
   }, [onStatusChange]);
 
+  const onAudioLevelRef = useRef(onAudioLevel);
+  useEffect(() => {
+    onAudioLevelRef.current = onAudioLevel;
+  }, [onAudioLevel]);
+
+  // 半二重ミュート: muted の変化をパイプラインへ反映する（bd-1or でゲイン方式へ変更）。
+  // getUserMedia 完了前に muted が変わるケースに備え、ref にも保持して
+  // パイプライン構築直後（handleStart 内）にも現在値を適用する。
+  const mutedRef = useRef(muted);
+  useEffect(() => {
+    mutedRef.current = muted;
+    pipelineRef.current?.setMuted(muted);
+  }, [muted]);
+
   useEffect(() => {
     onStatusChangeRef.current?.(status);
   }, [status]);
@@ -119,13 +176,21 @@ export function Recorder({
     // マウント/アンマウント時のみ実行する（stopInternal は関数宣言のため参照は安定）
   }, []);
 
-  /** MediaRecorder の停止とマイクトラックの解放を行う（内部専用） */
+  /** MediaRecorder の停止とマイクトラック・WebAudio資源の解放を行う（内部専用） */
   function stopInternal() {
+    if (levelIntervalRef.current !== null) {
+      clearInterval(levelIntervalRef.current);
+      levelIntervalRef.current = null;
+    }
+
     const recorder = mediaRecorderRef.current;
     if (recorder && (recorder.state === "recording" || recorder.state === "paused")) {
       recorder.stop();
     }
     mediaRecorderRef.current = null;
+
+    pipelineRef.current?.dispose();
+    pipelineRef.current = null;
 
     const stream = streamRef.current;
     if (stream) {
@@ -167,9 +232,35 @@ export function Recorder({
 
     streamRef.current = stream;
 
+    // WebAudio パイプラインを構築し（ユーザージェスチャ起点のためここで生成）、
+    // 現在のミュート状態を適用する（TTS再生中に録音を開始した場合、
+    // 最初から無音で開始する。bd-1or でゲイン方式へ変更）。
+    const pipeline = createAudioPipeline(stream);
+    pipelineRef.current = pipeline;
+    pipeline.setMuted(mutedRef.current);
+
     const supportedMimeType = getSupportedMimeType();
     const options: MediaRecorderOptions = supportedMimeType ? { mimeType: supportedMimeType } : {};
-    const recorder = new MediaRecorder(stream, options);
+
+    // MediaRecorder の構築失敗時は取得済み資源（AudioContext・マイクトラック）を
+    // 解放してエラー状態にする（コードレビュー should-fix: 従来から try/catch が
+    // なかったが、bd-1or で AudioContext がリーク対象に加わったため防御する）。
+    let recorder: MediaRecorder;
+    try {
+      recorder = new MediaRecorder(pipeline.recordingStream, options);
+    } catch (err) {
+      pipeline.dispose();
+      pipelineRef.current = null;
+      stream.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+      setErrorMessage(
+        err instanceof Error
+          ? `録音の初期化に失敗しました: ${err.message}`
+          : "録音の初期化に失敗しました",
+      );
+      setStatus("error");
+      return;
+    }
 
     recorder.ondataavailable = (event: BlobEvent) => {
       const blob = event.data;
@@ -188,10 +279,19 @@ export function Recorder({
     mediaRecorderRef.current = recorder;
     recorder.start(chunkMs);
 
+    // 入力レベルの定期通知（話者交代制の判定材料。WebAudio 不可時は
+    // getLevel() が null を返すため通知しない）。stopInternal で解除する。
+    levelIntervalRef.current = setInterval(() => {
+      const level = pipelineRef.current?.getLevel();
+      if (level !== null && level !== undefined) {
+        onAudioLevelRef.current?.(level);
+      }
+    }, AUDIO_LEVEL_INTERVAL_MS);
+
     sendMessageRef.current({
       type: "start",
       sourceLanguage: language,
-      detectLanguage: false,
+      detectLanguage,
       enableTts,
       chunkMs,
       silenceMs,
@@ -201,7 +301,17 @@ export function Recorder({
 
     setErrorMessage(null);
     setStatus("recording");
-  }, [disabled, status, language, enableTts, chunkMs, silenceMs, maxChars, maxSeconds]);
+  }, [
+    disabled,
+    status,
+    language,
+    detectLanguage,
+    enableTts,
+    chunkMs,
+    silenceMs,
+    maxChars,
+    maxSeconds,
+  ]);
 
   const handleStop = useCallback(() => {
     if (status !== "recording") return;
@@ -214,6 +324,27 @@ export function Recorder({
     if (status !== "recording") return;
     sendMessageRef.current({ type: "commit" });
   }, [status]);
+
+  /**
+   * `forceStop=true` を受けたら、録音中であれば強制的に停止する
+   * （ルーム終了時の即時停止。`docs/design/frontend-design.md` room_ended
+   * ハンドリング節）。`handleStop` は `status==="recording"` 以外は no-op なので
+   * 何度呼ばれても安全。
+   *
+   * 【レース対策】依存配列に `status` も含める。`forceStop` が true になった
+   * 瞬間、まだ `getUserMedia` の許可待ち（`status==="starting"`）であることが
+   * あり、その時点ではこの effect が実行されても `handleStop` は no-op で終わる。
+   * その後 `forceStop` 自体は値が変わらないため、`status` を依存に入れておかないと
+   * `getUserMedia` 解決後に `status` が "recording" に遷移しても effect が
+   * 再実行されず、room_ended 後もマイク許可待ちからそのまま録音が続いてしまう。
+   * `status` を依存に含めることで "starting"→"recording" の遷移時にも再評価され、
+   * `forceStop && status === "recording"` を確実に検出して停止できる。
+   */
+  useEffect(() => {
+    if (forceStop && status === "recording") {
+      handleStop();
+    }
+  }, [forceStop, status, handleStop]);
 
   const isRecording = status === "recording";
   const isStarting = status === "starting";
@@ -258,17 +389,6 @@ export function Recorder({
           手動で発話を区切る
         </button>
       </div>
-
-      <label className={styles.detectLanguageToggle}>
-        <input
-          type="checkbox"
-          checked={detectLanguage}
-          onChange={(e) => setDetectLanguage(e.target.checked)}
-          disabled
-          aria-label="言語検出モード（Phase2で有効化予定）"
-        />
-        言語検出モード（近日公開）
-      </label>
     </div>
   );
 }

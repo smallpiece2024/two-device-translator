@@ -154,7 +154,14 @@ function collectMessages(ws: WebSocket, count: number, timeoutMs = 2500): Promis
 
     const onMessage = (data: WebSocket.RawData) => {
       try {
-        received.push(JSON.parse(data.toString("utf8")) as RawMessage);
+        const message = JSON.parse(data.toString("utf8")) as RawMessage;
+        // active_speaker（話者調停、bd-6h1）は発話活動に伴い非同期に割り込む
+        // ため、このテストの関心事（参加者イベント・TTSトグル）から除外する
+        // （調停自体の検証は tests/integration/speaker-arbitration.test.ts）。
+        if (message.type === "active_speaker") {
+          return;
+        }
+        received.push(message);
         if (received.length >= count) {
           clearTimeout(timer);
           ws.off("message", onMessage);
@@ -175,7 +182,13 @@ function collectMessagesForGracePeriod(ws: WebSocket, graceMs = 400): Promise<Ra
   return new Promise((resolve) => {
     const received: RawMessage[] = [];
     const onMessage = (data: WebSocket.RawData) => {
-      received.push(JSON.parse(data.toString("utf8")) as RawMessage);
+      const message = JSON.parse(data.toString("utf8")) as RawMessage;
+      // collectMessages と同様、話者調停の active_speaker はこのテストの
+      // 関心事ではないため除外する。
+      if (message.type === "active_speaker") {
+        return;
+      }
+      received.push(message);
     };
     ws.on("message", onMessage);
     setTimeout(() => {
@@ -190,6 +203,12 @@ describe("参加者イベント通知・TTSトグル初期化（結合テスト�
   let wss: WebSocketServer;
   let clients: WebSocket[] = [];
   let speechStreams: MockRecognizeStream[];
+  // このテストは仮トークン("dummy-token")での join を前提にしている
+  // （招待フロー未実装のため、正規のSupabase/ゲストJWTは発行できない）。
+  // bd-0jy で join 検証が本実装（strict）化されたため、このテストの意図
+  // （参加者イベント通知・TTSトグルの検証）を壊さない最小対応として
+  // AUTH_MODE=insecure を明示する（server/auth/verifyParticipant.ts 参照）。
+  let originalAuthMode: string | undefined;
 
   function getPort(server: WebSocketServer): number {
     const address = server.address();
@@ -206,6 +225,9 @@ describe("参加者イベント通知・TTSトグル初期化（結合テスト�
   }
 
   beforeEach(async () => {
+    originalAuthMode = process.env.AUTH_MODE;
+    process.env.AUTH_MODE = "insecure";
+
     speechStreams = [createMockRecognizeStream(), createMockRecognizeStream()];
     setSpeechClient(createMockSpeechClient(speechStreams));
     setTranslateClient(createMockTranslateClient((text) => `[EN]${text}`));
@@ -216,6 +238,12 @@ describe("参加者イベント通知・TTSトグル初期化（結合テスト�
   });
 
   afterEach((done) => {
+    if (originalAuthMode === undefined) {
+      delete process.env.AUTH_MODE;
+    } else {
+      process.env.AUTH_MODE = originalAuthMode;
+    }
+
     clients.forEach((client) => client.terminate());
     clients = [];
     resetSpeechClient();
