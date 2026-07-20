@@ -208,6 +208,23 @@ module.exports = {
 
 ---
 
+## Supabase keepalive（bd-450）
+
+Supabase 無料プランはプロジェクトへの API アクセスが 7 日間ないと自動一時停止する。開発中でも本番サイトの利用が疎らな期間に停止し得るため、`.github/workflows/supabase-keepalive.yml` が 3 日おきに軽量な SELECT を実行して停止を抑止する。
+
+- トリガー: `schedule`（cron `0 20 */3 * *` = UTC 20:00 / JST 05:00。日付が 3 の倍数の日に実行。月境で間隔は 1〜4 日に変動するが、停止しきい値の 7 日に対して十分な余裕がある）＋ `workflow_dispatch`（手動実行）。ジョブは `timeout-minutes: 5`・curl `--max-time 30` でハング時のランナー占有を防ぐ。
+- 処理: anon キーで `{SUPABASE_URL}/rest/v1/plans?select=id&limit=1` へ REST GET し、HTTP 200 以外はジョブ失敗にする。`plans` は既存の公開参照テーブルで、anon の SELECT が RLS ポリシー（`plans_select_all`）＋ GRANT で許可済み（`20260705073031_phase2_rls_policies.sql`）。新規テーブル・マイグレーションは不要。
+- Secrets: リポジトリの Actions Secrets に `SUPABASE_URL` と `SUPABASE_ANON_KEY` を登録する（ユーザー作業）。**anon キーはブラウザに公開される前提のキーであり、CI 節の「CI にシークレットを置かない」ルール（本物の外部 API をテストで呼ばないための規定）の例外として許容する。service_role キーは絶対に置かない。**
+- バリデーション: `tests/unit/supabaseKeepaliveWorkflow.test.ts` がワークフロー定義（トリガー・Secrets 参照のみ・読み取り専用・service_role 不使用）を検証する。実行経路の検証は Secrets 登録後に `workflow_dispatch` の手動実行で行う。
+
+### 運用上の注意（GitHub 仕様）
+
+- **schedule は既定ブランチ（`main`）上のワークフローでのみ動作する。** dev マージだけでは動かず、dev→main の PR マージ後に有効化される。
+- **公開リポジトリでは 60 日間リポジトリ活動（コミット等）がないと scheduled workflow が自動無効化される。** GitHub からメール通知が届き、Actions タブから手動で再有効化できる。開発継続中は問題ないが、プロジェクトを長期放置する場合は keepalive ごと停止する（そのときは Supabase も停止するが、ダッシュボードから復元可能）。長期放置後も維持したい場合はプライベートリポジトリへの keepalive 移設を検討する（プライベートは 60 日ルールの対象外）。
+- cron は混雑時間帯に数十分遅延することがあるが、keepalive 用途では影響しない。
+
+---
+
 ## CD（対象外）
 
 **CD（GCE への自動デプロイ）は当面導入しない**（CLAUDE.md CI 節）。デプロイは手動（VM 上で `git pull` → `npm ci` → `build` → `build:server` → `pm2 reload ecosystem.config.js`）。手動デプロイが苦になった段階（Phase2 以降）で検討する。本設計では CD パイプラインを定義しない。
