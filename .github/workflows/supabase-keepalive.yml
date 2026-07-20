@@ -1,0 +1,46 @@
+name: Supabase Keepalive
+
+# Supabase 無料プランは 7 日間 API アクセスがないと自動一時停止するため、
+# 3 日おきに軽量な SELECT を実行して停止を抑止する（bd-450）。
+#
+# 運用上の注意（docs/design/infra-design.md「Supabase keepalive」参照）:
+# - schedule は既定ブランチ（main）上のワークフローでのみ動作する
+# - 公開リポジトリでは 60 日間リポジトリ活動がないと scheduled workflow が
+#   自動無効化される（GitHub からメール通知 → Actions タブで再有効化）
+# - Secrets に置くのは SUPABASE_URL と SUPABASE_ANON_KEY（公開前提の anon キー）のみ。
+#   service_role キーは絶対に置かない
+# - SELECT 先の plans テーブルは anon の SELECT が RLS ポリシー
+#   （plans_select_all）+ GRANT で許可済みの公開参照テーブル
+
+on:
+  schedule:
+    # UTC 20:00 = JST 05:00。日付が3の倍数の日に実行（月境で間隔は1〜4日に
+    # 変動するが、停止しきい値の7日に対して十分な余裕がある）
+    - cron: "0 20 */3 * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Select from plans table
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
+            echo "SUPABASE_URL / SUPABASE_ANON_KEY secrets are not set" >&2
+            exit 1
+          fi
+          status=$(curl -sS --max-time 30 -o /dev/null -w "%{http_code}" \
+            "$SUPABASE_URL/rest/v1/plans?select=id&limit=1" \
+            -H "apikey: $SUPABASE_ANON_KEY" \
+            -H "Authorization: Bearer $SUPABASE_ANON_KEY")
+          echo "HTTP status: $status"
+          if [ "$status" != "200" ]; then
+            echo "keepalive request failed" >&2
+            exit 1
+          fi
