@@ -100,6 +100,34 @@ export interface RecorderProps {
 }
 
 /**
+ * getUserMedia 失敗時のユーザー向けエラーメッセージを組み立てる（bd-2jn）。
+ *
+ * ブラウザ設定でマイクが事前ブロックされている端末では許可ダイアログが
+ * 表示されないまま失敗するため、`DOMException.name` で対処ガイド付きの
+ * 文言に出し分ける。NotAllowed / NotFound ではブラウザの生メッセージ
+ * （英語）をユーザーに見せない（原文はコンソールログにのみ残す）。
+ */
+export function getUserMediaErrorMessage(err: unknown): string {
+  const name =
+    typeof err === "object" && err !== null && "name" in err
+      ? String((err as { name: unknown }).name)
+      : "";
+  if (name === "NotAllowedError" || name === "PermissionDeniedError") {
+    return (
+      "マイクの使用がブラウザでブロックされています。" +
+      "アドレスバーのサイト設定（鍵アイコン等）からマイクを「許可」にして、" +
+      "ページを再読み込みしてください。"
+    );
+  }
+  if (name === "NotFoundError") {
+    return "マイクが見つかりません。端末にマイクが接続されているか確認してください。";
+  }
+  return err instanceof Error
+    ? `マイクへのアクセスが拒否されました: ${err.message}`
+    : "マイクへのアクセスに失敗しました";
+}
+
+/**
  * Recorder コンポーネント。
  *
  * マイク権限の取得・MediaRecorder の開始/停止・音声チャンクの base64 化と
@@ -213,11 +241,9 @@ export function Recorder({
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       } catch (err) {
         if (isUnmountedRef.current) return;
-        const message =
-          err instanceof Error
-            ? `マイクへのアクセスが拒否されました: ${err.message}`
-            : "マイクへのアクセスに失敗しました";
-        setErrorMessage(message);
+        // ユーザー向けには対処ガイド付きの文言を出し、原文は診断用にログへ残す
+        console.warn("[Recorder] getUserMedia に失敗しました:", err);
+        setErrorMessage(getUserMediaErrorMessage(err));
         setStatus("error");
         return;
       }

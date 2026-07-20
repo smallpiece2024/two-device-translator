@@ -193,6 +193,7 @@ interface RoomState {
 - `getUserMedia({ audio: true })` → `MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus" })`（プロトタイプ流用）。
 - `startMicRecording(chunkMs=250)` で timeslice 録音。`ondataavailable` の Blob → base64 → `sendAudio`。`stopMicRecording()` でトラック解放。
 - マイク許可拒否は `onError`（クライアント側エラー表示）。HTTPS 必須（NFR-1.1、[infra-design.md](./infra-design.md) 参照）。
+- **getUserMedia 失敗時のメッセージ出し分け（bd-2jn）**: ブラウザ設定でマイクが事前ブロックされている端末では許可ダイアログが出ないまま失敗するため、`DOMException.name` で対処ガイド付きの文言に出し分ける（`Recorder.tsx` の `getUserMediaErrorMessage`）。`NotAllowedError` / `PermissionDeniedError` → サイト設定（鍵アイコン）からマイクを許可して再読み込みする案内、`NotFoundError` → マイク未接続の確認案内、その他 → 従来の汎用メッセージ（＋ `Error` なら詳細）。NotAllowed / NotFound ではブラウザの生メッセージ（英語）をユーザーに表示しない（原文は `console.warn` にのみ残す）。
 
 ### useAudioQueue()
 
